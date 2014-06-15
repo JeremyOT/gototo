@@ -29,6 +29,13 @@ func RunRouter(routerAddress, dealerAddress string, routerBind, dealerBind bool)
 }
 
 type WorkerFunction func(interface{}) interface{}
+type MarshalFunction func(interface{}) ([]byte, error)
+type UnmarshalFunction func([]byte) (map[string]interface{}, error)
+
+func unmarshalJson(buf []byte) (data map[string]interface{}, err error) {
+	err = json.Unmarshal(buf, &data)
+	return
+}
 
 type Worker struct {
 	logger                    *log.Logger
@@ -40,6 +47,8 @@ type Worker struct {
 	address                   string
 	maxWorkers                int
 	runningWorkers            int
+	marshal                   MarshalFunction
+	unmarshal                 UnmarshalFunction
 }
 
 // Create a new worker bound to address that will run at most count functions at a time.
@@ -55,6 +64,8 @@ func New(address string, count int) *Worker {
 		wait:           make(chan int),
 		maxWorkers:     count,
 		address:        address,
+		marshal:        json.Marshal,
+		unmarshal:      unmarshalJson,
 	}
 }
 
@@ -70,6 +81,14 @@ func (w *Worker) SetLogger(l *log.Logger) {
 	w.logger = l
 }
 
+func (w *Worker) SetMarshalFunction(marshal MarshalFunction) {
+	w.marshal = marshal
+}
+
+func (w *Worker) SetUnmarshalFunction(unmarshal UnmarshalFunction) {
+	w.unmarshal = unmarshal
+}
+
 func (w *Worker) writeLog(message ...interface{}) {
 	if w.logger != nil {
 		w.logger.Println(message)
@@ -83,9 +102,9 @@ func (w *Worker) RegisterWorkerFunction(name string, workerFunction WorkerFuncti
 }
 
 // Run a worker function and send the response to responseChannel
-func runFunction(responseChannel chan [][]byte, message [][]byte, parameters interface{}, workerFunction WorkerFunction) {
+func (w *Worker) runFunction(responseChannel chan [][]byte, message [][]byte, parameters interface{}, workerFunction WorkerFunction) {
 	response := workerFunction(parameters)
-	responseData, _ := json.Marshal(response)
+	responseData, _ := w.marshal(response)
 	message[len(message)-1] = responseData
 	responseChannel <- message
 }
@@ -131,10 +150,9 @@ func (w *Worker) Run() {
 				runtime.Gosched()
 				break
 			}
-			data := map[string]interface{}{}
-			json.Unmarshal(message[len(message)-1], &data)
-			if data == nil {
-				w.writeLog("Received invalid message")
+			data, err := w.unmarshal(message[len(message)-1])
+			if err != nil {
+				w.writeLog("Received invalid message", err)
 				break
 			}
 			workerFunction := w.registeredWorkerFunctions[data["method"].(string)]
@@ -146,7 +164,7 @@ func (w *Worker) Run() {
 				socket.SetSockOptInt(zmq.RCVTIMEO, w.activeTimeout)
 			}
 			w.runningWorkers += 1
-			go runFunction(responseChannel, message, data["parameters"], workerFunction)
+			go w.runFunction(responseChannel, message, data["parameters"], workerFunction)
 		}
 	}
 }
