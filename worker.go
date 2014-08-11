@@ -2,31 +2,11 @@ package gototo
 
 import (
 	"encoding/json"
-	zmq "github.com/JeremyOT/gozmq"
+	zmq "github.com/JeremyOT/zmq4"
 	"log"
 	"runtime"
+	"time"
 )
-
-// Run a ZMQ router->dealer at the specified addresses.
-func RunRouter(routerAddress, dealerAddress string, routerBind, dealerBind bool) error {
-	context, _ := zmq.NewContext()
-	defer context.Close()
-	router, _ := context.NewSocket(zmq.ROUTER)
-	defer router.Close()
-	if routerBind {
-		router.Bind(routerAddress)
-	} else {
-		router.Connect(routerAddress)
-	}
-	dealer, _ := context.NewSocket(zmq.DEALER)
-	defer dealer.Close()
-	if dealerBind {
-		dealer.Bind(dealerAddress)
-	} else {
-		dealer.Connect(dealerAddress)
-	}
-	return zmq.Device(zmq.QUEUE, router, dealer)
-}
 
 type WorkerFunction func(interface{}) interface{}
 type MarshalFunction func(interface{}) ([]byte, error)
@@ -40,8 +20,8 @@ func unmarshalJson(buf []byte) (data map[string]interface{}, err error) {
 type Worker struct {
 	logger                    *log.Logger
 	registeredWorkerFunctions map[string]WorkerFunction
-	activeTimeout             int
-	passiveTimeout            int
+	activeTimeout             time.Duration
+	passiveTimeout            time.Duration
 	quit                      chan int
 	wait                      chan int
 	address                   string
@@ -58,8 +38,8 @@ func New(address string, count int) *Worker {
 		count = runtime.NumCPU()
 	}
 	return &Worker{registeredWorkerFunctions: make(map[string]WorkerFunction),
-		activeTimeout:  1,
-		passiveTimeout: 100,
+		activeTimeout:  time.Millisecond,
+		passiveTimeout: 100 * time.Millisecond,
 		quit:           make(chan int),
 		wait:           make(chan int),
 		maxWorkers:     count,
@@ -111,19 +91,20 @@ func (w *Worker) runFunction(responseChannel chan [][]byte, message [][]byte, pa
 
 func (w *Worker) Run() {
 	defer func() { close(w.wait) }()
-	context, _ := zmq.NewContext()
-	defer context.Close()
-	socket, _ := context.NewSocket(zmq.ROUTER)
+	socket, err := zmq.NewSocket(zmq.ROUTER)
+	if err != nil {
+		log.Println("Failed to start worker:", err)
+	}
 	defer socket.Close()
-	socket.SetSockOptInt(zmq.RCVTIMEO, w.passiveTimeout)
+	socket.SetRcvtimeo(w.passiveTimeout)
 	socket.Bind(w.address)
 	w.runningWorkers = 0
 	responseChannel := make(chan [][]byte)
 	sendResponse := func(response [][]byte) {
 		w.runningWorkers -= 1
-		socket.SendMultipart(response, 0)
+		socket.SendMessage(response)
 		if w.runningWorkers == 0 {
-			socket.SetSockOptInt(zmq.RCVTIMEO, w.passiveTimeout)
+			socket.SetRcvtimeo(w.passiveTimeout)
 		}
 	}
 	for {
@@ -142,10 +123,10 @@ func (w *Worker) Run() {
 			sendResponse(response)
 			break
 		default:
-			message, err := socket.RecvMultipart(0)
+			message, err := socket.RecvMessageBytes(0)
 			if err != nil {
 				// Needed to yield to goroutines when GOMAXPROCS is 1.
-				// Note: The 1.2 preemptive scheduler doesn't seem to work here,
+				// Note: The 1.3 preemptive scheduler doesn't seem to work here,
 				// so this is still required.
 				runtime.Gosched()
 				break
@@ -161,7 +142,7 @@ func (w *Worker) Run() {
 				break
 			}
 			if w.runningWorkers == 0 {
-				socket.SetSockOptInt(zmq.RCVTIMEO, w.activeTimeout)
+				socket.SetRcvtimeo(w.activeTimeout)
 			}
 			w.runningWorkers += 1
 			go w.runFunction(responseChannel, message, data["parameters"], workerFunction)
