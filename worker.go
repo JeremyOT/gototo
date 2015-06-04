@@ -28,10 +28,27 @@ func unmarshalJSON(buf []byte) (data map[string]interface{}, err error) {
 	return
 }
 
+// Response is a general response container that will be returned with Success = false
+// if any errors are encountered while attempting to call a type safe function.
 type Response struct {
 	Success bool        `json:"success"`
 	Error   string      `json:"error,omitempty"`
 	Result  interface{} `json:"result,omitempty"`
+}
+
+// Validator allows automatic validation when calling type safe functions. If implemented
+// by the type passed as an argument, Type.Validate() will be called before calling the
+// worker function. If an error is returned then that error will be sent in response to
+// the worker request and the method will not be called.
+type Validator interface {
+	Validate() error
+}
+
+// RequestUnpacker allows custom translation of request objects before calling type safe functions.
+// Before calling a type safe function, UnpackRequest() will be called on a new instance of the
+// parameter type. Note that mapstructure will not be used if this interface is implemented.
+type RequestUnpacker interface {
+	UnpackRequest(interface{}) error
 }
 
 // Worker listens for requests and invokes registered goroutines when called.
@@ -139,6 +156,8 @@ func (w *Worker) MakeWorkerFunction(workerFunction interface{}) WorkerFunction {
 	if inputType.Kind() != reflect.Ptr {
 		w.panicLog(fmt.Sprintf("Worker functions must take a pointer to a struct as their argument: %#v", function))
 	}
+	validate := inputType.Implements(reflect.TypeOf((*Validator)(nil)).Elem())
+	customUnpack := inputType.Implements(reflect.TypeOf((*RequestUnpacker)(nil)).Elem())
 	inputType = inputType.Elem()
 	if inputType.Kind() != reflect.Struct {
 		w.panicLog(fmt.Sprintf("Worker functions must take a pointer to a struct as their argument: %#v", function))
@@ -146,20 +165,32 @@ func (w *Worker) MakeWorkerFunction(workerFunction interface{}) WorkerFunction {
 	return func(input interface{}) (output interface{}) {
 		inputValue := reflect.New(inputType)
 		parameters := inputValue.Interface()
-		config := &mapstructure.DecoderConfig{
-			Metadata: nil,
-			Result:   parameters,
-			TagName:  w.convertTypeTagName,
+		if customUnpack {
+			if err := parameters.(RequestUnpacker).UnpackRequest(input); err != nil {
+				w.writeLog(fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err))
+				return &Response{Success: false, Error: fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err)}
+			}
+		} else {
+			config := &mapstructure.DecoderConfig{
+				Metadata: nil,
+				Result:   parameters,
+				TagName:  w.convertTypeTagName,
+			}
+			decoder, err := mapstructure.NewDecoder(config)
+			if err != nil {
+				w.writeLog("Failed to construct decoder:", err)
+				return &Response{Success: false, Error: fmt.Sprintf("Failed to construct decoder: %s", err)}
+			}
+			if err = decoder.Decode(input); err != nil {
+				w.writeLog(fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err))
+				return &Response{Success: false, Error: fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err)}
+			}
 		}
-		decoder, err := mapstructure.NewDecoder(config)
-		if err != nil {
-			w.writeLog("Failed to construct decoder:", err)
-			return &Response{Success: false, Error: fmt.Sprintf("Failed to construct decoder: %s", err)}
-		}
-		err = decoder.Decode(input)
-		if err != nil {
-			w.writeLog(fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err))
-			return &Response{Success: false, Error: fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err)}
+		if validate {
+			if err := parameters.(Validator).Validate(); err != nil {
+				w.writeLog("Validation failed:", err)
+				return &Response{Success: false, Error: fmt.Sprintf("Validation failed: %s", err)}
+			}
 		}
 		return function.Call([]reflect.Value{inputValue})[0].Interface()
 	}
