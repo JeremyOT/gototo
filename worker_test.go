@@ -1,9 +1,6 @@
 package gototo
 
-import (
-	"reflect"
-	"testing"
-)
+import "testing"
 
 type SampleType struct {
 	String string `json:"string"`
@@ -15,13 +12,18 @@ type SampleType struct {
 	} `json:"data"`
 }
 
+func checkPanics(t *testing.T, f func()) {
+	defer func() {
+		if err := recover(); err == nil {
+			t.Error("Expected panic")
+		}
+	}()
+	f()
+}
+
 func TestConvert(t *testing.T) {
 
-	workerFunc := func(in interface{}) interface{} {
-		converted, ok := in.(*SampleType)
-		if !ok {
-			t.Fatalf("Failed to convert type: %#v\n", in)
-		}
+	workerFunc := func(converted *SampleType) *Response {
 		if converted.String != "hi" {
 			t.Error("Wrong String", converted.String)
 		}
@@ -37,13 +39,9 @@ func TestConvert(t *testing.T) {
 		if converted.Data.B != "Bye" {
 			t.Error("Wrong Data.B", converted.Data.B)
 		}
-		return true
+		return &Response{Success: true}
 	}
-	missingWorkerFunc := func(in interface{}) interface{} {
-		converted, ok := in.(*SampleType)
-		if !ok {
-			t.Fatalf("Failed to convert type: %#v\n", in)
-		}
+	missingWorkerFunc := func(converted *SampleType) *Response {
 		if converted.String != "" {
 			t.Error("Wrong String", converted.String)
 		}
@@ -59,10 +57,10 @@ func TestConvert(t *testing.T) {
 		if converted.Data.B != "" {
 			t.Error("Wrong Data.B", converted.Data.B)
 		}
-		return true
+		return &Response{Success: true}
 	}
 	w := New("", 0)
-	w.ConvertFunctionType(reflect.TypeOf(SampleType{}), workerFunc)(map[string]interface{}{
+	w.MakeWorkerFunction(workerFunc)(map[string]interface{}{
 		"string": "hi",
 		"bool":   true,
 		"int":    42,
@@ -71,7 +69,7 @@ func TestConvert(t *testing.T) {
 			"b": "Bye",
 		},
 	})
-	w.ConvertFunctionType(reflect.TypeOf(SampleType{}), workerFunc)(map[string]interface{}{
+	w.MakeWorkerFunction(workerFunc)(map[string]interface{}{
 		"string": "hi",
 		"bool":   true,
 		"int":    42,
@@ -82,5 +80,24 @@ func TestConvert(t *testing.T) {
 		},
 		"bad": "Ignored",
 	})
-	w.ConvertFunctionType(reflect.TypeOf(SampleType{}), missingWorkerFunc)(map[string]interface{}{})
+	w.MakeWorkerFunction(missingWorkerFunc)(map[string]interface{}{})
+
+	checkPanics(t, func() {
+		w.MakeWorkerFunction(1)
+	})
+	checkPanics(t, func() {
+		w.MakeWorkerFunction(func(i string) string { return "" })
+	})
+	checkPanics(t, func() {
+		w.MakeWorkerFunction(func(i ...*Response) *Response { return nil })
+	})
+	checkPanics(t, func() {
+		w.MakeWorkerFunction(func(i *Response, j *Response) *Response { return nil })
+	})
+	checkPanics(t, func() {
+		w.MakeWorkerFunction(func(i *Response) (*Response, *Response) { return nil, nil })
+	})
+	checkPanics(t, func() {
+		w.MakeWorkerFunction(func(i *string) *Response { return nil })
+	})
 }

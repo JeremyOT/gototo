@@ -29,8 +29,9 @@ func unmarshalJSON(buf []byte) (data map[string]interface{}, err error) {
 }
 
 type Response struct {
-	Success bool   `json:"success"`
-	Error   string `json:"error"`
+	Success bool        `json:"success"`
+	Error   string      `json:"error,omitempty"`
+	Result  interface{} `json:"result,omitempty"`
 }
 
 // Worker listens for requests and invokes registered goroutines when called.
@@ -102,18 +103,49 @@ func (w *Worker) writeLog(message ...interface{}) {
 	}
 }
 
+func (w *Worker) panicLog(message ...interface{}) {
+	if w.logger != nil {
+		w.logger.Panicln(message)
+	} else {
+		log.Panicln(message)
+	}
+}
+
 func (w *Worker) RegisterWorkerFunction(name string, workerFunction WorkerFunction) {
 	w.registeredWorkerFunctions[name] = workerFunction
 }
 
-// ConvertFunctionType creates a wrapper around a WorkerFunction that converts in the
-// input interface{} into the specified type. The original WorkerFunction will be invoked
-// with an instance of the type instead of the usual map[string]interface{}.
-// This allows a worker function to trust that its input argument is of a selected struct
-// type without the risk of panic during interface conversion.
-func (w *Worker) ConvertFunctionType(typ reflect.Type, workerFunction WorkerFunction) WorkerFunction {
+// MakeWorkerFunction creates a wrapper around a function that allows a function to be
+// called in a type safe manner. The function is expected to take a pointer to a struct
+// as its only argument and return one value. Internally, github.com/mitchellh/mapstructure
+// is used to convert the input parameters to a struct. MakeWorkerFunction will panic
+// if called with an incorrect type.
+func (w *Worker) MakeWorkerFunction(workerFunction interface{}) WorkerFunction {
+	function := reflect.ValueOf(workerFunction)
+	functionType := function.Type()
+	if functionType.Kind() != reflect.Func {
+		w.panicLog(fmt.Sprintf("Attempt to convert invalid type %#v to worker function", functionType))
+	}
+	if functionType.IsVariadic() {
+		w.panicLog(fmt.Sprintf("Attempt to convert variadic function %#v to worker function", function))
+	}
+	if functionType.NumIn() != 1 {
+		w.panicLog(fmt.Sprintf("Worker functions must accept one and only one argument: %#v", function))
+	}
+	if functionType.NumOut() != 1 {
+		w.panicLog(fmt.Sprintf("Worker functions must only return one and only one result: %#v", function))
+	}
+	inputType := functionType.In(0)
+	if inputType.Kind() != reflect.Ptr {
+		w.panicLog(fmt.Sprintf("Worker functions must take a pointer to a struct as their argument: %#v", function))
+	}
+	inputType = inputType.Elem()
+	if inputType.Kind() != reflect.Struct {
+		w.panicLog(fmt.Sprintf("Worker functions must take a pointer to a struct as their argument: %#v", function))
+	}
 	return func(input interface{}) (output interface{}) {
-		parameters := reflect.New(typ).Interface()
+		inputValue := reflect.New(inputType)
+		parameters := inputValue.Interface()
 		config := &mapstructure.DecoderConfig{
 			Metadata: nil,
 			Result:   parameters,
@@ -126,10 +158,10 @@ func (w *Worker) ConvertFunctionType(typ reflect.Type, workerFunction WorkerFunc
 		}
 		err = decoder.Decode(input)
 		if err != nil {
-			w.writeLog(fmt.Sprintf("Failed to convert parameters to type %v: %s", typ, err))
-			return &Response{Success: false, Error: fmt.Sprintf("Failed to convert parameters to type %v: %s", typ, err)}
+			w.writeLog(fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err))
+			return &Response{Success: false, Error: fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err)}
 		}
-		return workerFunction(parameters)
+		return function.Call([]reflect.Value{inputValue})[0].Interface()
 	}
 }
 
