@@ -2,21 +2,38 @@ package gototo
 
 import (
 	"encoding/json"
-	zmq "github.com/JeremyOT/zmq4"
+	"fmt"
 	"log"
+	"reflect"
 	"runtime"
+	"sync/atomic"
 	"time"
+
+	zmq "github.com/JeremyOT/gototo/internal/github.com/pebbe/zmq4"
+	"github.com/mitchellh/mapstructure"
 )
 
+// WorkerFunction may be registered with a worker
 type WorkerFunction func(interface{}) interface{}
+
+// MarshalFunction converts the result of a WorkerFunction to a byte slice to be
+// sent back to the caller.
 type MarshalFunction func(interface{}) ([]byte, error)
+
+// UnmarshalFunction converts a byte slice to a worker invocation payload.
 type UnmarshalFunction func([]byte) (map[string]interface{}, error)
 
-func unmarshalJson(buf []byte) (data map[string]interface{}, err error) {
+func unmarshalJSON(buf []byte) (data map[string]interface{}, err error) {
 	err = json.Unmarshal(buf, &data)
 	return
 }
 
+type Response struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error"`
+}
+
+// Worker listens for requests and invokes registered goroutines when called.
 type Worker struct {
 	logger                    *log.Logger
 	registeredWorkerFunctions map[string]WorkerFunction
@@ -25,10 +42,11 @@ type Worker struct {
 	quit                      chan int
 	wait                      chan int
 	address                   string
-	maxWorkers                int
-	runningWorkers            int
+	maxWorkers                int32
+	runningWorkers            int32
 	marshal                   MarshalFunction
 	unmarshal                 UnmarshalFunction
+	convertTypeTagName        string
 }
 
 // Create a new worker bound to address that will run at most count functions at a time.
@@ -38,14 +56,15 @@ func New(address string, count int) *Worker {
 		count = runtime.NumCPU()
 	}
 	return &Worker{registeredWorkerFunctions: make(map[string]WorkerFunction),
-		activeTimeout:  time.Millisecond,
-		passiveTimeout: 100 * time.Millisecond,
-		quit:           make(chan int),
-		wait:           make(chan int),
-		maxWorkers:     count,
-		address:        address,
-		marshal:        json.Marshal,
-		unmarshal:      unmarshalJson,
+		activeTimeout:      time.Millisecond,
+		passiveTimeout:     100 * time.Millisecond,
+		quit:               make(chan int),
+		wait:               make(chan int),
+		maxWorkers:         int32(count),
+		address:            address,
+		marshal:            json.Marshal,
+		unmarshal:          unmarshalJSON,
+		convertTypeTagName: "json",
 	}
 }
 
@@ -69,6 +88,12 @@ func (w *Worker) SetUnmarshalFunction(unmarshal UnmarshalFunction) {
 	w.unmarshal = unmarshal
 }
 
+// SetConvertTypeTagName sets the tag name to use to find field information when
+// converting request parameters to custom types. By default this is "json"
+func (w *Worker) SetConvertTypeTagName(tagName string) {
+	w.convertTypeTagName = tagName
+}
+
 func (w *Worker) writeLog(message ...interface{}) {
 	if w.logger != nil {
 		w.logger.Println(message)
@@ -79,6 +104,33 @@ func (w *Worker) writeLog(message ...interface{}) {
 
 func (w *Worker) RegisterWorkerFunction(name string, workerFunction WorkerFunction) {
 	w.registeredWorkerFunctions[name] = workerFunction
+}
+
+// ConvertFunctionType creates a wrapper around a WorkerFunction that converts in the
+// input interface{} into the specified type. The original WorkerFunction will be invoked
+// with an instance of the type instead of the usual map[string]interface{}.
+// This allows a worker function to trust that its input argument is of a selected struct
+// type without the risk of panic during interface conversion.
+func (w *Worker) ConvertFunctionType(typ reflect.Type, workerFunction WorkerFunction) WorkerFunction {
+	return func(input interface{}) (output interface{}) {
+		parameters := reflect.New(typ).Interface()
+		config := &mapstructure.DecoderConfig{
+			Metadata: nil,
+			Result:   parameters,
+			TagName:  w.convertTypeTagName,
+		}
+		decoder, err := mapstructure.NewDecoder(config)
+		if err != nil {
+			w.writeLog("Failed to construct decoder:", err)
+			return &Response{Success: false, Error: fmt.Sprintf("Failed to construct decoder: %s", err)}
+		}
+		err = decoder.Decode(input)
+		if err != nil {
+			w.writeLog(fmt.Sprintf("Failed to convert parameters to type %v: %s", typ, err))
+			return &Response{Success: false, Error: fmt.Sprintf("Failed to convert parameters to type %v: %s", typ, err)}
+		}
+		return workerFunction(parameters)
+	}
 }
 
 // Run a worker function and send the response to responseChannel
@@ -98,17 +150,17 @@ func (w *Worker) Run() {
 	defer socket.Close()
 	socket.SetRcvtimeo(w.passiveTimeout)
 	socket.Bind(w.address)
-	w.runningWorkers = 0
+	atomic.StoreInt32(&w.runningWorkers, 0)
 	responseChannel := make(chan [][]byte)
 	sendResponse := func(response [][]byte) {
-		w.runningWorkers -= 1
+		atomic.AddInt32(&w.runningWorkers, -1)
 		socket.SendMessage(response)
-		if w.runningWorkers == 0 {
+		if atomic.LoadInt32(&w.runningWorkers) == 0 {
 			socket.SetRcvtimeo(w.passiveTimeout)
 		}
 	}
 	for {
-		if w.runningWorkers == w.maxWorkers {
+		if atomic.LoadInt32(&w.runningWorkers) == w.maxWorkers {
 			select {
 			case response := <-responseChannel:
 				sendResponse(response)
@@ -141,10 +193,10 @@ func (w *Worker) Run() {
 				w.writeLog("Unregistered worker function:", data["method"].(string))
 				break
 			}
-			if w.runningWorkers == 0 {
+			if atomic.LoadInt32(&w.runningWorkers) == 0 {
 				socket.SetRcvtimeo(w.activeTimeout)
 			}
-			w.runningWorkers += 1
+			atomic.AddInt32(&w.runningWorkers, 1)
 			go w.runFunction(responseChannel, message, data["parameters"], workerFunction)
 		}
 	}
