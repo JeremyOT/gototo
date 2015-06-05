@@ -1,8 +1,10 @@
 package gototo
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 )
 
 type SampleType struct {
@@ -141,4 +143,13 @@ func TestConvert(t *testing.T) {
 	if r := unpackingFunc(map[string]interface{}{"string": "test"}).(*Response); r == nil || r.Success {
 		t.Error("Expected error:", r)
 	}
+	d := &struct{ Time time.Duration }{Time: 5 * time.Second}
+	out, err := json.Marshal(d)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(string(out))
+	var s struct{ Time time.Duration }
+	json.Unmarshal(out, &s)
+	fmt.Println(s)
 }

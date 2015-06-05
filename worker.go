@@ -65,6 +65,7 @@ type Worker struct {
 	marshal                   MarshalFunction
 	unmarshal                 UnmarshalFunction
 	convertTypeTagName        string
+	convertTypeDecoderConfig  *mapstructure.DecoderConfig
 }
 
 // Create a new worker bound to address that will run at most count functions at a time.
@@ -110,6 +111,12 @@ func (w *Worker) SetUnmarshalFunction(unmarshal UnmarshalFunction) {
 // converting request parameters to custom types. By default this is "json"
 func (w *Worker) SetConvertTypeTagName(tagName string) {
 	w.convertTypeTagName = tagName
+}
+
+// SetConvertTypeDecoderConfig sets the mapstructure config to use when decoding.
+// if set, it takes precidence over SetConvertTypeTagName
+func (w *Worker) SetConvertTypeDecoderConfig(config *mapstructure.DecoderConfig) {
+	w.convertTypeDecoderConfig = config
 }
 
 func (w *Worker) writeLog(message ...interface{}) {
@@ -171,10 +178,23 @@ func (w *Worker) MakeWorkerFunction(workerFunction interface{}) WorkerFunction {
 				return &Response{Success: false, Error: fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err)}
 			}
 		} else {
-			config := &mapstructure.DecoderConfig{
-				Metadata: nil,
-				Result:   parameters,
-				TagName:  w.convertTypeTagName,
+			var config *mapstructure.DecoderConfig
+			if w.convertTypeDecoderConfig != nil {
+				config = &mapstructure.DecoderConfig{
+					Metadata:         w.convertTypeDecoderConfig.Metadata,
+					Result:           parameters,
+					TagName:          w.convertTypeDecoderConfig.TagName,
+					ErrorUnused:      w.convertTypeDecoderConfig.ErrorUnused,
+					ZeroFields:       w.convertTypeDecoderConfig.ZeroFields,
+					WeaklyTypedInput: w.convertTypeDecoderConfig.WeaklyTypedInput,
+					DecodeHook:       w.convertTypeDecoderConfig.DecodeHook,
+				}
+			} else {
+				config = &mapstructure.DecoderConfig{
+					Metadata: nil,
+					Result:   parameters,
+					TagName:  w.convertTypeTagName,
+				}
 			}
 			decoder, err := mapstructure.NewDecoder(config)
 			if err != nil {
