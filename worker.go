@@ -21,9 +21,9 @@ type WorkerFunction func(interface{}) interface{}
 type MarshalFunction func(interface{}) ([]byte, error)
 
 // UnmarshalFunction converts a byte slice to a worker invocation payload.
-type UnmarshalFunction func([]byte) (map[string]interface{}, error)
+type UnmarshalFunction func([]byte) (*Request, error)
 
-func unmarshalJSON(buf []byte) (data map[string]interface{}, err error) {
+func unmarshalJSON(buf []byte) (data *Request, err error) {
 	err = json.Unmarshal(buf, &data)
 	return
 }
@@ -34,6 +34,12 @@ type Response struct {
 	Success bool        `json:"success"`
 	Error   string      `json:"error,omitempty"`
 	Result  interface{} `json:"result,omitempty"`
+}
+
+// Request is a general request container. It has a Method identifier and Parameters.
+type Request struct {
+	Method     string      `json:"method"`
+	Parameters interface{} `json:"parameters"`
 }
 
 // Validator allows automatic validation when calling type safe functions. If implemented
@@ -57,8 +63,8 @@ type Worker struct {
 	registeredWorkerFunctions map[string]WorkerFunction
 	activeTimeout             time.Duration
 	passiveTimeout            time.Duration
-	quit                      chan int
-	wait                      chan int
+	quit                      chan struct{}
+	wait                      chan struct{}
 	address                   string
 	maxWorkers                int32
 	runningWorkers            int32
@@ -77,8 +83,6 @@ func New(address string, count int) *Worker {
 	return &Worker{registeredWorkerFunctions: make(map[string]WorkerFunction),
 		activeTimeout:      time.Millisecond,
 		passiveTimeout:     100 * time.Millisecond,
-		quit:               make(chan int),
-		wait:               make(chan int),
 		maxWorkers:         int32(count),
 		address:            address,
 		marshal:            json.Marshal,
@@ -88,7 +92,7 @@ func New(address string, count int) *Worker {
 }
 
 func (w *Worker) Quit() {
-	w.quit <- 1
+	close(w.quit)
 }
 
 func (w *Worker) Wait() {
@@ -216,16 +220,35 @@ func (w *Worker) MakeWorkerFunction(workerFunction interface{}) WorkerFunction {
 	}
 }
 
+func (w *Worker) handlePanic(responseChannel chan [][]byte, message [][]byte) {
+	if r := recover(); r != nil {
+		errString := fmt.Sprintf("Panic while invoking worker function: %#v", r)
+		w.writeLog(errString)
+		if responseData, err := w.marshal(&Response{Success: false, Error: errString}); err != nil {
+			w.writeLog("Error encoding response:", err)
+		} else {
+			message[len(message)-1] = responseData
+			responseChannel <- message
+		}
+	}
+}
+
 // Run a worker function and send the response to responseChannel
 func (w *Worker) runFunction(responseChannel chan [][]byte, message [][]byte, parameters interface{}, workerFunction WorkerFunction) {
+	defer w.handlePanic(responseChannel, message)
 	response := workerFunction(parameters)
-	responseData, _ := w.marshal(response)
-	message[len(message)-1] = responseData
-	responseChannel <- message
+	if responseData, err := w.marshal(response); err != nil {
+		panic(err.Error())
+	} else {
+		message[len(message)-1] = responseData
+		responseChannel <- message
+	}
 }
 
 func (w *Worker) Run() {
-	defer func() { close(w.wait) }()
+	w.wait = make(chan struct{})
+	w.quit = make(chan struct{})
+	defer close(w.wait)
 	socket, err := zmq.NewSocket(zmq.ROUTER)
 	if err != nil {
 		log.Println("Failed to start worker:", err)
@@ -266,21 +289,21 @@ func (w *Worker) Run() {
 				runtime.Gosched()
 				break
 			}
-			data, err := w.unmarshal(message[len(message)-1])
+			request, err := w.unmarshal(message[len(message)-1])
 			if err != nil {
 				w.writeLog("Received invalid message", err)
 				break
 			}
-			workerFunction := w.registeredWorkerFunctions[data["method"].(string)]
+			workerFunction := w.registeredWorkerFunctions[request.Method]
 			if workerFunction == nil {
-				w.writeLog("Unregistered worker function:", data["method"].(string))
+				w.writeLog("Unregistered worker function:", request.Method)
 				break
 			}
 			if atomic.LoadInt32(&w.runningWorkers) == 0 {
 				socket.SetRcvtimeo(w.activeTimeout)
 			}
 			atomic.AddInt32(&w.runningWorkers, 1)
-			go w.runFunction(responseChannel, message, data["parameters"], workerFunction)
+			go w.runFunction(responseChannel, message, request.Parameters, workerFunction)
 		}
 	}
 }
