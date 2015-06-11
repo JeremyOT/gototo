@@ -3,6 +3,7 @@ package gototo
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"reflect"
 	"testing"
 	"time"
@@ -156,15 +157,25 @@ func TestConvert(t *testing.T) {
 }
 
 func TestCall(t *testing.T) {
-	worker := New("tcp://*:64242", 10)
+	tcpAddr, _ := net.ResolveTCPAddr("tcp", ":0")
+	l, err := net.ListenTCP("tcp", tcpAddr)
+	if err != nil {
+		t.Fatal("Failed to create TCP listener:", err)
+	}
+	tcpAddr = l.Addr().(*net.TCPAddr)
+	err = l.Close()
+	if err != nil {
+		t.Fatal("Failed to create TCP listener:", err)
+	}
+	worker := New(fmt.Sprintf("tcp://*:%d", tcpAddr.Port), 10)
 	worker.RegisterWorkerFunction("test_func", worker.MakeWorkerFunction(func(i *SampleValidatedType) *Response { return &Response{Success: true, Result: i} }))
-	err := worker.Start()
+	err = worker.Start()
 	if err != nil {
 		t.Fatal("Failed to start worker:", err)
 	}
 	time.Sleep(100 * time.Millisecond)
 	defer worker.Shutdown()
-	connection := NewConnection("tcp://127.0.0.1:64242")
+	connection := NewConnection(fmt.Sprintf("tcp://127.0.0.1:%d", tcpAddr.Port))
 	connection.RegisterResponseType("test_func", &Response{})
 	err = connection.Start()
 	if err != nil {

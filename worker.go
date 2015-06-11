@@ -282,7 +282,6 @@ func (w *Worker) Start() (err error) {
 	return
 }
 
-// Run is deprecated. Use Start
 func (w *Worker) Run() {
 	w.wait = make(chan struct{})
 	w.quit = make(chan struct{})
