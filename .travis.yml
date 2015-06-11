@@ -4,7 +4,7 @@ before_install:
   - sudo apt-get install libtool autoconf automake uuid-dev build-essential
   - wget http://download.zeromq.org/zeromq-4.1.1.tar.gz
   - tar xzf zeromq-4.1.1.tar.gz && pushd zeromq-4.1.1
-  - ./configure --without-libsodium
+  - ./configure --without-libsodium --prefix=/usr
   - make && sudo make install
   - popd
 
