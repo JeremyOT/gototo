@@ -50,11 +50,11 @@ type Validator interface {
 	Validate() error
 }
 
-// RequestUnpacker allows custom translation of request objects before calling type safe functions.
-// Before calling a type safe function, UnpackRequest() will be called on a new instance of the
+// Unpacker allows custom translation of request objects before calling type safe functions.
+// Before calling a type safe function, Unpack() will be called on a new instance of the
 // parameter type. Note that mapstructure will not be used if this interface is implemented.
-type RequestUnpacker interface {
-	UnpackRequest(interface{}) error
+type Unpacker interface {
+	Unpack(interface{}) error
 }
 
 // Worker listens for requests and invokes registered goroutines when called.
@@ -91,8 +91,16 @@ func New(address string, count int) *Worker {
 	}
 }
 
+func (w *Worker) Shutdown() {
+	if w.quit != nil {
+		w.Quit()
+		w.Wait()
+	}
+}
+
 func (w *Worker) Quit() {
-	close(w.quit)
+	defer close(w.quit)
+	w.quit = nil
 }
 
 func (w *Worker) Wait() {
@@ -143,6 +151,53 @@ func (w *Worker) RegisterWorkerFunction(name string, workerFunction WorkerFuncti
 	w.registeredWorkerFunctions[name] = workerFunction
 }
 
+func convertValue(inputType reflect.Type, input interface{}, customUnpack bool, config *mapstructure.DecoderConfig, defaultTagName string) (output reflect.Value, err error) {
+	output = reflect.New(inputType)
+	parameters := output.Interface()
+	if customUnpack {
+		if err := parameters.(Unpacker).Unpack(input); err != nil {
+			return reflect.ValueOf(nil), fmt.Errorf("Failed to convert parameters to type %v: %s", inputType, err)
+		}
+	} else {
+		var config *mapstructure.DecoderConfig
+		if config != nil {
+			config = &mapstructure.DecoderConfig{
+				Metadata:         config.Metadata,
+				Result:           parameters,
+				TagName:          config.TagName,
+				ErrorUnused:      config.ErrorUnused,
+				ZeroFields:       config.ZeroFields,
+				WeaklyTypedInput: config.WeaklyTypedInput,
+				DecodeHook:       config.DecodeHook,
+			}
+		} else {
+			config = &mapstructure.DecoderConfig{
+				Metadata: nil,
+				Result:   parameters,
+				TagName:  defaultTagName,
+			}
+		}
+		decoder, err := mapstructure.NewDecoder(config)
+		if err != nil {
+			return reflect.ValueOf(nil), fmt.Errorf("Failed to construct decoder: %s", err)
+		}
+		if err = decoder.Decode(input); err != nil {
+			return reflect.ValueOf(nil), fmt.Errorf("Failed to convert parameters to type %v: %s", inputType, err)
+		}
+	}
+	return
+}
+
+func (w *Worker) ConvertValue(inputType reflect.Type, input interface{}) (output interface{}, err error) {
+	_, customUnpack := input.(Unpacker)
+	outputValue, err := convertValue(inputType, input, customUnpack, w.convertTypeDecoderConfig, w.convertTypeTagName)
+	if err != nil {
+		return
+	}
+	output = outputValue.Interface()
+	return
+}
+
 // MakeWorkerFunction creates a wrapper around a function that allows a function to be
 // called in a type safe manner. The function is expected to take a pointer to a struct
 // as its only argument and return one value. Internally, github.com/mitchellh/mapstructure
@@ -168,48 +223,18 @@ func (w *Worker) MakeWorkerFunction(workerFunction interface{}) WorkerFunction {
 		w.panicLog(fmt.Sprintf("Worker functions must take a pointer to a struct as their argument: %#v", function))
 	}
 	validate := inputType.Implements(reflect.TypeOf((*Validator)(nil)).Elem())
-	customUnpack := inputType.Implements(reflect.TypeOf((*RequestUnpacker)(nil)).Elem())
+	customUnpack := inputType.Implements(reflect.TypeOf((*Unpacker)(nil)).Elem())
 	inputType = inputType.Elem()
 	if inputType.Kind() != reflect.Struct {
 		w.panicLog(fmt.Sprintf("Worker functions must take a pointer to a struct as their argument: %#v", function))
 	}
 	return func(input interface{}) (output interface{}) {
-		inputValue := reflect.New(inputType)
-		parameters := inputValue.Interface()
-		if customUnpack {
-			if err := parameters.(RequestUnpacker).UnpackRequest(input); err != nil {
-				w.writeLog(fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err))
-				return &Response{Success: false, Error: fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err)}
-			}
-		} else {
-			var config *mapstructure.DecoderConfig
-			if w.convertTypeDecoderConfig != nil {
-				config = &mapstructure.DecoderConfig{
-					Metadata:         w.convertTypeDecoderConfig.Metadata,
-					Result:           parameters,
-					TagName:          w.convertTypeDecoderConfig.TagName,
-					ErrorUnused:      w.convertTypeDecoderConfig.ErrorUnused,
-					ZeroFields:       w.convertTypeDecoderConfig.ZeroFields,
-					WeaklyTypedInput: w.convertTypeDecoderConfig.WeaklyTypedInput,
-					DecodeHook:       w.convertTypeDecoderConfig.DecodeHook,
-				}
-			} else {
-				config = &mapstructure.DecoderConfig{
-					Metadata: nil,
-					Result:   parameters,
-					TagName:  w.convertTypeTagName,
-				}
-			}
-			decoder, err := mapstructure.NewDecoder(config)
-			if err != nil {
-				w.writeLog("Failed to construct decoder:", err)
-				return &Response{Success: false, Error: fmt.Sprintf("Failed to construct decoder: %s", err)}
-			}
-			if err = decoder.Decode(input); err != nil {
-				w.writeLog(fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err))
-				return &Response{Success: false, Error: fmt.Sprintf("Failed to convert parameters to type %v: %s", inputType, err)}
-			}
+		inputValue, err := convertValue(inputType, input, customUnpack, w.convertTypeDecoderConfig, w.convertTypeTagName)
+		if err != nil {
+			w.writeLog("Failed to decode:", err)
+			return &Response{Success: false, Error: fmt.Sprintf("Failed to decode: %s", err)}
 		}
+		parameters := inputValue.Interface()
 		if validate {
 			if err := parameters.(Validator).Validate(); err != nil {
 				w.writeLog("Validation failed:", err)
@@ -245,6 +270,19 @@ func (w *Worker) runFunction(responseChannel chan [][]byte, message [][]byte, pa
 	}
 }
 
+func (w *Worker) Start() (err error) {
+	w.wait = make(chan struct{})
+	w.quit = make(chan struct{})
+	defer close(w.wait)
+	socket, err := zmq.NewSocket(zmq.ROUTER)
+	if err != nil {
+		return
+	}
+	go w.run(socket)
+	return
+}
+
+// Run is deprecated. Use Start
 func (w *Worker) Run() {
 	w.wait = make(chan struct{})
 	w.quit = make(chan struct{})
@@ -253,6 +291,9 @@ func (w *Worker) Run() {
 	if err != nil {
 		log.Println("Failed to start worker:", err)
 	}
+	w.run(socket)
+}
+func (w *Worker) run(socket *zmq.Socket) {
 	defer socket.Close()
 	socket.SetRcvtimeo(w.passiveTimeout)
 	socket.Bind(w.address)
@@ -260,7 +301,9 @@ func (w *Worker) Run() {
 	responseChannel := make(chan [][]byte)
 	sendResponse := func(response [][]byte) {
 		atomic.AddInt32(&w.runningWorkers, -1)
-		socket.SendMessage(response)
+		if _, err := socket.SendMessage(response); err != nil {
+			w.writeLog("Failed to send response:", err)
+		}
 		if atomic.LoadInt32(&w.runningWorkers) == 0 {
 			socket.SetRcvtimeo(w.passiveTimeout)
 		}
