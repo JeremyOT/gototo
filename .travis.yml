@@ -1,7 +1,7 @@
 language: go
 
 before_install:
-  - sudo apt-get install libtool autoconf automake uuid-dev build-essential
+  - sudo apt-get install libtool autoconf automake uuid-dev build-essential libsodium
   - wget http://download.zeromq.org/zeromq-4.1.1.tar.gz
   - tar xzf zeromq-4.1.1.tar.gz && pushd zeromq-4.1.1
   - ./configure
