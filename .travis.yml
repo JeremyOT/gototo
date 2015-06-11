@@ -5,7 +5,7 @@ before_install:
   - wget http://download.zeromq.org/zeromq-4.1.1.tar.gz
   - tar xzf zeromq-4.1.1.tar.gz && pushd zeromq-4.1.1
   - ./configure --without-libsodium
-  - make && make install
+  - make && sudo make install
   - popd
 
 script: go test -v .
