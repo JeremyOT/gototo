@@ -15,6 +15,16 @@ import (
 	"github.com/mitchellh/mapstructure"
 )
 
+var responseType = reflect.TypeOf(Response{})
+
+type ResponseError struct {
+	text string
+}
+
+func (err *ResponseError) Error() string {
+	return err.text
+}
+
 // ClientMarshalFunction converts a Request into a byte slice to send to worker
 type ClientMarshalFunction func(req *Request) ([]byte, error)
 
@@ -45,7 +55,9 @@ type connectionRequest struct {
 }
 
 type WorkerConnection struct {
-	sync.RWMutex
+	requestLock              sync.RWMutex
+	converterLock            sync.RWMutex
+	connectionLock           sync.RWMutex
 	quit                     chan struct{}
 	wait                     chan struct{}
 	endpoints                map[string]bool
@@ -59,6 +71,7 @@ type WorkerConnection struct {
 	convertTypeTagName       string
 	convertTypeDecoderConfig *mapstructure.DecoderConfig
 	connectionChan           chan *connectionRequest
+	connectionResultChan     chan error
 }
 
 func NewConnection(endpoints ...string) *WorkerConnection {
@@ -99,8 +112,11 @@ func (c *WorkerConnection) SetConvertTypeDecoderConfig(config *mapstructure.Deco
 }
 
 // RegisterResponseType ensures that responses from calls to the named method are converted
-// to the proper type before being returned to the caller.
-func (c *WorkerConnection) RegisterResponseType(method string, i interface{}) {
+// to the proper type before being returned to the caller. If wrappedInResponse is true then
+// the response will be parsed into a Response struct before reading the result from
+// Response.Result and any error from the Response will be retuned as an *ResponseError from the
+// ConverterFunction.
+func (c *WorkerConnection) RegisterResponseType(method string, i interface{}, wrappedInResponse bool) {
 	typ := reflect.TypeOf(i)
 	if typ.Kind() != reflect.Ptr {
 		panic(fmt.Sprintf("Only pointers to structs may be registered as a response type: %#v", typ))
@@ -111,6 +127,17 @@ func (c *WorkerConnection) RegisterResponseType(method string, i interface{}) {
 		panic(fmt.Sprintf("Only pointers to structs may be registered as a response type: %#v", typ))
 	}
 	converter := func(input interface{}) (output interface{}, err error) {
+		if wrappedInResponse {
+			responseValue, err := convertValue(responseType, input, false, c.convertTypeDecoderConfig, c.convertTypeTagName)
+			if err != nil {
+				return nil, err
+			}
+			parsedResponse := responseValue.Interface().(*Response)
+			if !parsedResponse.Success {
+				return nil, &ResponseError{text: parsedResponse.Error}
+			}
+			input = parsedResponse.Result
+		}
 		inputValue, err := convertValue(typ, input, customUnpack, c.convertTypeDecoderConfig, c.convertTypeTagName)
 		if err != nil {
 			return
@@ -118,8 +145,8 @@ func (c *WorkerConnection) RegisterResponseType(method string, i interface{}) {
 		output = inputValue.Interface()
 		return
 	}
-	c.Lock()
-	defer c.Unlock()
+	c.converterLock.Lock()
+	defer c.converterLock.Unlock()
 	c.registeredConverters[method] = converter
 }
 
@@ -133,9 +160,9 @@ func (c *WorkerConnection) ConvertValue(inputType reflect.Type, input interface{
 	return
 }
 
-func (c *WorkerConnection) PendingOperations() int {
-	c.RLock()
-	defer c.RUnlock()
+func (c *WorkerConnection) PendingRequestCount() int {
+	c.requestLock.RLock()
+	defer c.requestLock.RUnlock()
 	return len(c.requests)
 }
 
@@ -150,6 +177,7 @@ func (c *WorkerConnection) Start() (err error) {
 	c.quit = make(chan struct{})
 	c.wait = make(chan struct{})
 	c.connectionChan = make(chan *connectionRequest)
+	c.connectionResultChan = make(chan error)
 	socket, err := zmq.NewSocket(zmq.DEALER)
 	if err != nil {
 		return
@@ -165,9 +193,11 @@ func (c *WorkerConnection) Start() (err error) {
 }
 
 func (c *WorkerConnection) handleResponse(response [][]byte) {
-	c.Lock()
-	request := c.requests[string(response[1])]
-	c.Unlock()
+	key := string(response[1])
+	c.requestLock.Lock()
+	request := c.requests[key]
+	delete(c.requests, key)
+	c.requestLock.Unlock()
 	if request == nil {
 		log.Println("Response received for invalid request: ", uuid.UUID(response[1]))
 		return
@@ -175,22 +205,45 @@ func (c *WorkerConnection) handleResponse(response [][]byte) {
 	request.ResponseChan <- response[2]
 }
 
+func (c *WorkerConnection) GetEndpoints() (endpoints []string) {
+	c.connectionLock.RLock()
+	defer c.connectionLock.RUnlock()
+	endpoints = make([]string, 0, len(c.endpoints))
+	for e := range c.endpoints {
+		endpoints = append(endpoints, e)
+	}
+	return
+}
+
+func (c *WorkerConnection) Connect(endpoint string) error {
+	c.connectionChan <- &connectionRequest{endpoint: endpoint, connect: true}
+	return <-c.connectionResultChan
+}
+
+func (c *WorkerConnection) Disconnect(endpoint string) error {
+	c.connectionChan <- &connectionRequest{endpoint: endpoint, connect: false}
+	return <-c.connectionResultChan
+}
+
 func (c *WorkerConnection) handleConnectionRequest(socket *zmq.Socket, request *connectionRequest) {
-	c.Lock()
-	defer c.Unlock()
+	c.connectionLock.Lock()
+	defer c.connectionLock.Unlock()
 	if request.connect {
 		if err := socket.Connect(request.endpoint); err != nil {
 			log.Printf("Failed to connect to endpoint %s: %s\n", request.endpoint, err)
+			c.connectionResultChan <- err
 		} else {
 			c.endpoints[request.endpoint] = true
 		}
 	} else {
 		if err := socket.Connect(request.endpoint); err != nil {
 			log.Printf("Failed to disconnect from endpoint %s: %s\n", request.endpoint, err)
+			c.connectionResultChan <- err
 		} else {
 			delete(c.endpoints, request.endpoint)
 		}
 	}
+	c.connectionResultChan <- nil
 }
 
 func (c *WorkerConnection) run(socket *zmq.Socket) {
@@ -206,7 +259,7 @@ func (c *WorkerConnection) run(socket *zmq.Socket) {
 				log.Println("Failed to send request:", err)
 			}
 		case request := <-c.connectionChan:
-			c.handleConnectionRequest(socket, request)
+			go c.handleConnectionRequest(socket, request)
 		default:
 			message, err := socket.RecvMessageBytes(0)
 			if err != nil {
@@ -222,24 +275,26 @@ func (c *WorkerConnection) run(socket *zmq.Socket) {
 	}
 }
 
+// Call calls a method on a worker and blocks until it receives a response. Use RegisterResponseType to automatically
+// convert responses into the correct type.
 func (c *WorkerConnection) Call(method string, parameters interface{}) (response interface{}, err error) {
 	data, err := c.marshal(&Request{Method: method, Parameters: parameters})
 	if err != nil {
 		return
 	}
 	request := &WorkerRequest{ID: uuid.NewUUID(), Time: time.Now(), ResponseChan: make(chan []byte)}
-	c.Lock()
+	c.requestLock.Lock()
 	c.requests[string(request.ID)] = request
-	c.Unlock()
+	c.requestLock.Unlock()
 	c.requestChannel <- [][]byte{[]byte{}, []byte(request.ID), data}
 	responseData := <-request.ResponseChan
 	response, err = c.unmarshal(responseData)
 	if err != nil {
 		return
 	}
-	c.RLock()
+	c.converterLock.RLock()
 	converter := c.registeredConverters[method]
-	c.RUnlock()
+	c.converterLock.RUnlock()
 	if converter != nil {
 		response, err = converter(response)
 	}

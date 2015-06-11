@@ -36,6 +36,34 @@ type Response struct {
 	Result  interface{} `json:"result,omitempty"`
 }
 
+// CreateErrorResponse creates a new response based on an error. If err is nil, then
+// the response signify success. Otherwise it will be initialized with the error
+// text.
+func CreateErrorResponse(err error) *Response {
+	if err == nil {
+		return &Response{Success: true}
+	} else {
+		return &Response{Success: false, Error: err.Error()}
+	}
+}
+
+// CreateSuccessResponse creates a new successful response with the supplied parameter
+// stored in its Result field.
+func CreateSuccessResponse(result interface{}) *Response {
+	return &Response{Success: true, Result: result}
+}
+
+// CreateResponse creates a new response based on the supplied result and error. If
+// err is nil, then the response will contain the supplied result. Otherwise it will
+// be initialized with the error text.
+func CreateResponse(result interface{}, err error) *Response {
+	if err == nil {
+		return &Response{Success: true, Result: result}
+	} else {
+		return &Response{Success: false, Error: err.Error()}
+	}
+}
+
 // Request is a general request container. It has a Method identifier and Parameters.
 type Request struct {
 	Method     string      `json:"method"`

@@ -2,9 +2,9 @@ package gototo
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
-	"reflect"
 	"testing"
 	"time"
 )
@@ -168,38 +168,75 @@ func TestCall(t *testing.T) {
 		t.Fatal("Failed to create TCP listener:", err)
 	}
 	worker := New(fmt.Sprintf("tcp://*:%d", tcpAddr.Port), 10)
-	worker.RegisterWorkerFunction("test_func", worker.MakeWorkerFunction(func(i *SampleValidatedType) *Response { return &Response{Success: true, Result: i} }))
+	worker.RegisterWorkerFunction("test_func", worker.MakeWorkerFunction(func(i *SampleValidatedType) *Response {
+		if i.String != "fail" {
+			return CreateSuccessResponse(i)
+		} else {
+			return CreateErrorResponse(errors.New("Empty string!"))
+		}
+	}))
 	err = worker.Start()
 	if err != nil {
 		t.Fatal("Failed to start worker:", err)
 	}
 	time.Sleep(100 * time.Millisecond)
 	defer worker.Shutdown()
-	connection := NewConnection(fmt.Sprintf("tcp://127.0.0.1:%d", tcpAddr.Port))
-	connection.RegisterResponseType("test_func", &Response{})
+	addr := fmt.Sprintf("tcp://127.0.0.1:%d", tcpAddr.Port)
+	connection := NewConnection(addr)
+	connection.RegisterResponseType("test_func", &SampleValidatedType{}, true)
 	err = connection.Start()
 	if err != nil {
 		t.Fatal("Failed to start connection:", err)
+	}
+	err = connection.Disconnect(addr)
+	if err != nil {
+		t.Fatal("Failed to disconnect:", err)
+	}
+	if len(connection.GetEndpoints()) > 0 {
+		t.Fatal("Expected no connections")
+	}
+	err = connection.Connect(addr)
+	if err != nil {
+		t.Fatal("Failed to reconnect:", err)
+	}
+	if len(connection.GetEndpoints()) != 1 {
+		t.Fatal("Expected one connections")
+	}
+	err = connection.Connect(addr)
+	if err != nil {
+		t.Fatal("Failed to reconnect:", err)
+	}
+	if len(connection.GetEndpoints()) != 1 {
+		t.Fatal("Expected one connections")
 	}
 	defer connection.Stop()
 	resp, err := connection.Call("test_func", &SampleValidatedType{String: "test request string"})
 	if err != nil {
 		t.Fatal("Failed to decode response:", err)
 	}
-	if r, ok := resp.(*Response); !ok {
-		t.Fatal("Bad response:", r)
+	if svt, ok := resp.(*SampleValidatedType); !ok {
+		t.Fatalf("Bad response: %#v\n", resp)
+	} else if svt.String != "test request string" {
+		t.Fatalf("Bad response: %#v\n", resp)
+	}
+	resp, err = connection.Call("test_func", &SampleValidatedType{String: ""})
+	if err == nil {
+		t.Fatalf("Expected error: %#v %#v\n", resp, err)
 	} else {
-		if r.Success != true {
-			t.Fatal("Bad response:", r)
+		if responseError, ok := err.(*ResponseError); !ok {
+			t.Fatalf("Expected *ResponseError: %#v\n", err)
+		} else if responseError.Error() != "Validation failed: Empty String field" {
+			t.Fatalf("Expected 'Validation failed: Empty String field': %#v\n", err)
 		}
-		if svti, err := connection.ConvertValue(reflect.TypeOf(SampleValidatedType{}), r.Result); err != nil {
-			t.Fatal("Bad response:", r, err)
-		} else {
-			if svt, ok := svti.(*SampleValidatedType); !ok {
-				t.Fatal("Bad response:", r, svti)
-			} else if svt.String != "test request string" {
-				t.Fatal("Bad response:", r)
-			}
+	}
+	resp, err = connection.Call("test_func", &SampleValidatedType{String: "fail"})
+	if err == nil {
+		t.Fatalf("Expected error: %#v %#v\n", resp, err)
+	} else {
+		if responseError, ok := err.(*ResponseError); !ok {
+			t.Fatalf("Expected *ResponseError: %#v\n", err)
+		} else if responseError.Error() != "Empty string!" {
+			t.Fatalf("Expected 'Empty string!': %#v\n", err)
 		}
 	}
 }
