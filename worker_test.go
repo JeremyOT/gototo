@@ -52,6 +52,10 @@ func checkPanics(t *testing.T, f func()) {
 	f()
 }
 
+type WaitRequest struct {
+	Timeout time.Duration `json:"timeout"`
+}
+
 func TestConvert(t *testing.T) {
 
 	workerFunc := func(converted *SampleType) *Response {
@@ -175,15 +179,21 @@ func TestCall(t *testing.T) {
 			return CreateErrorResponse(errors.New("Empty string!"))
 		}
 	}))
+	worker.RegisterWorkerFunction("slow_test_func", worker.MakeWorkerFunction(func(i *WaitRequest) *Response {
+		time.Sleep(i.Timeout)
+		return CreateSuccessResponse(i)
+	}))
 	err = worker.Start()
 	if err != nil {
 		t.Fatal("Failed to start worker:", err)
 	}
 	time.Sleep(100 * time.Millisecond)
-	defer worker.Shutdown()
+	defer worker.Stop()
 	addr := fmt.Sprintf("tcp://127.0.0.1:%d", tcpAddr.Port)
 	connection := NewConnection(addr)
 	connection.RegisterResponseType("test_func", &SampleValidatedType{}, true)
+	connection.RegisterResponseType("slow_test_func", &WaitRequest{}, true)
+	connection.RegisterDefaultOptions("slow_test_func", &RequestOptions{Timeout: 100 * time.Millisecond, RetryCount: 3})
 	err = connection.Start()
 	if err != nil {
 		t.Fatal("Failed to start connection:", err)
@@ -196,6 +206,20 @@ func TestCall(t *testing.T) {
 		t.Fatal("Expected no connections")
 	}
 	err = connection.Connect(addr)
+	if err != nil {
+		t.Fatal("Failed to reconnect:", err)
+	}
+	if len(connection.GetEndpoints()) != 1 {
+		t.Fatal("Expected one connections")
+	}
+	err = connection.SetEndpoints()
+	if err != nil {
+		t.Fatal("Failed to disconnect:", err)
+	}
+	if len(connection.GetEndpoints()) > 0 {
+		t.Fatal("Expected no connections")
+	}
+	err = connection.SetEndpoints(addr)
 	if err != nil {
 		t.Fatal("Failed to reconnect:", err)
 	}
@@ -238,5 +262,13 @@ func TestCall(t *testing.T) {
 		} else if responseError.Error() != "Empty string!" {
 			t.Fatalf("Expected 'Empty string!': %#v\n", err)
 		}
+	}
+	resp, err = connection.Call("slow_test_func", &WaitRequest{Timeout: 200 * time.Millisecond})
+	if err != nil {
+		t.Error("Unexpected response error:", err)
+	}
+	resp, err = connection.Call("slow_test_func", &WaitRequest{Timeout: 1 * time.Second})
+	if err != ErrTimeout {
+		t.Error("Expected timeout, found:", err, resp)
 	}
 }

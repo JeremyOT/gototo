@@ -2,7 +2,6 @@ package gototo
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"reflect"
 	"runtime"
@@ -18,11 +17,18 @@ import (
 var responseType = reflect.TypeOf(Response{})
 
 type ResponseError struct {
-	text string
+	text    string
+	timeout bool
 }
 
+// Error returns the message from the error
 func (err *ResponseError) Error() string {
 	return err.text
+}
+
+// Timeout returns true if the error was caused by a timeout
+func (err *ResponseError) Timeout() bool {
+	return err.timeout
 }
 
 // ClientMarshalFunction converts a Request into a byte slice to send to worker
@@ -43,7 +49,7 @@ func clientUnmarshalJson(buf []byte) (data interface{}, err error) {
 	return
 }
 
-type WorkerRequest struct {
+type workerRequest struct {
 	Time         time.Time
 	ID           uuid.UUID
 	ResponseChan chan []byte
@@ -54,26 +60,50 @@ type connectionRequest struct {
 	connect  bool
 }
 
+// RequestOptions may be used to set additional parameters when calling remote methods.
+type RequestOptions struct {
+	// Timeout specifies a timeout for request. It will be retried if there have been
+	// less than RetryCount attempts. Otherwise ErrTimeout will be returned.
+	Timeout time.Duration `json:"timeout"`
+	// RetryCount specifies the maximum number of retries to attempt when a request
+	// times out. Retrying does not cancel existing requests and the first response
+	// will be returned to the caller.
+	RetryCount int `json:"retry_count"`
+}
+
+// GlobalDefaultRequestOptions allows global defaults to be set for requests. It will be used
+// when requests are invoked with Call and no method defaults are set.
+var GlobalDefaultRequestOptions = RequestOptions{}
+
+// ErrTimeout is returned whenever a request times out and has no remaining retries.
+var ErrTimeout = &ResponseError{text: "Request timed out", timeout: true}
+
+// WorkerConnection is used to make RPCs to remote workers. If multiple workers are connected,
+// requests will be round-robin load balanced between them.
 type WorkerConnection struct {
 	requestLock              sync.RWMutex
 	converterLock            sync.RWMutex
 	connectionLock           sync.RWMutex
+	optionLock               sync.RWMutex
 	quit                     chan struct{}
 	wait                     chan struct{}
 	endpoints                map[string]bool
-	requests                 map[string]*WorkerRequest
+	requests                 map[string]*workerRequest
 	marshal                  ClientMarshalFunction
 	unmarshal                ClientUnmarshalFunction
 	requestChannel           chan [][]byte
 	activeTimeout            time.Duration
 	passiveTimeout           time.Duration
 	registeredConverters     map[string]ConverterFunction
+	defaultOptions           map[string]*RequestOptions
 	convertTypeTagName       string
 	convertTypeDecoderConfig *mapstructure.DecoderConfig
 	connectionChan           chan *connectionRequest
 	connectionResultChan     chan error
 }
 
+// NewConnection creates a new WorkerConnection and optionally prepares it to connect
+// to one or more endpoints.
 func NewConnection(endpoints ...string) *WorkerConnection {
 	endpointMap := make(map[string]bool, len(endpoints))
 	for _, endpoint := range endpoints {
@@ -85,16 +115,19 @@ func NewConnection(endpoints ...string) *WorkerConnection {
 		unmarshal:            clientUnmarshalJson,
 		activeTimeout:        time.Millisecond,
 		passiveTimeout:       100 * time.Millisecond,
-		requests:             make(map[string]*WorkerRequest),
+		requests:             make(map[string]*workerRequest),
 		registeredConverters: make(map[string]ConverterFunction),
 		requestChannel:       make(chan [][]byte),
+		defaultOptions:       make(map[string]*RequestOptions),
 	}
 }
 
+// SetMarshalFunction sets the function used to marshal requests for transmission.
 func (c *WorkerConnection) SetMarshalFunction(marshal ClientMarshalFunction) {
 	c.marshal = marshal
 }
 
+//SetUnmarshalFunction sets the function used to unmarshal responses.
 func (c *WorkerConnection) SetUnmarshalFunction(unmarshal ClientUnmarshalFunction) {
 	c.unmarshal = unmarshal
 }
@@ -114,17 +147,17 @@ func (c *WorkerConnection) SetConvertTypeDecoderConfig(config *mapstructure.Deco
 // RegisterResponseType ensures that responses from calls to the named method are converted
 // to the proper type before being returned to the caller. If wrappedInResponse is true then
 // the response will be parsed into a Response struct before reading the result from
-// Response.Result and any error from the Response will be retuned as an *ResponseError from the
+// Response.Result and any error from the Response will be returned as an *ResponseError from the
 // ConverterFunction.
 func (c *WorkerConnection) RegisterResponseType(method string, i interface{}, wrappedInResponse bool) {
 	typ := reflect.TypeOf(i)
 	if typ.Kind() != reflect.Ptr {
-		panic(fmt.Sprintf("Only pointers to structs may be registered as a response type: %#v", typ))
+		log.Panicf("Only pointers to structs may be registered as a response type: %#v", typ)
 	}
 	customUnpack := typ.Implements(reflect.TypeOf((*Unpacker)(nil)).Elem())
 	typ = typ.Elem()
 	if typ.Kind() != reflect.Struct {
-		panic(fmt.Sprintf("Only pointers to structs may be registered as a response type: %#v", typ))
+		log.Panicf("Only pointers to structs may be registered as a response type: %#v", typ)
 	}
 	converter := func(input interface{}) (output interface{}, err error) {
 		if wrappedInResponse {
@@ -150,6 +183,17 @@ func (c *WorkerConnection) RegisterResponseType(method string, i interface{}, wr
 	c.registeredConverters[method] = converter
 }
 
+// RegisterDefaultOptions sets the options that will be used whenever Call is used for a given method.
+// This does not affect CallWithOptions.
+func (c *WorkerConnection) RegisterDefaultOptions(method string, options *RequestOptions) {
+	c.optionLock.Lock()
+	defer c.optionLock.Unlock()
+	c.defaultOptions[method] = options
+}
+
+// ConvertValue is a convenience method for converting a received interface{} to a specified type. It may
+// be used e.g. when a JSON response is parsed to a map[string]interface{} and you want to turn it into
+// a struct.
 func (c *WorkerConnection) ConvertValue(inputType reflect.Type, input interface{}) (output interface{}, err error) {
 	_, customUnpack := input.(Unpacker)
 	outputValue, err := convertValue(inputType, input, customUnpack, c.convertTypeDecoderConfig, c.convertTypeTagName)
@@ -160,12 +204,14 @@ func (c *WorkerConnection) ConvertValue(inputType reflect.Type, input interface{
 	return
 }
 
+// PendingRequestCount returns the number of requests currently awaiting responses
 func (c *WorkerConnection) PendingRequestCount() int {
 	c.requestLock.RLock()
 	defer c.requestLock.RUnlock()
 	return len(c.requests)
 }
 
+// Stop stops the worker connection and waits until it is completely shutdown
 func (c *WorkerConnection) Stop() {
 	if c.quit != nil {
 		close(c.quit)
@@ -199,12 +245,13 @@ func (c *WorkerConnection) handleResponse(response [][]byte) {
 	delete(c.requests, key)
 	c.requestLock.Unlock()
 	if request == nil {
-		log.Println("Response received for invalid request: ", uuid.UUID(response[1]))
+		log.Println("Response received for invalid request - it may have already been answered: ", uuid.UUID(response[1]))
 		return
 	}
 	request.ResponseChan <- response[2]
 }
 
+// GetEndpoints returns all endpoints that the WorkerConnection is connected to.
 func (c *WorkerConnection) GetEndpoints() (endpoints []string) {
 	c.connectionLock.RLock()
 	defer c.connectionLock.RUnlock()
@@ -215,14 +262,48 @@ func (c *WorkerConnection) GetEndpoints() (endpoints []string) {
 	return
 }
 
+// Connect connects to a new endpoint
 func (c *WorkerConnection) Connect(endpoint string) error {
 	c.connectionChan <- &connectionRequest{endpoint: endpoint, connect: true}
 	return <-c.connectionResultChan
 }
 
+// Disconnect disconnects from an existing endpoint
 func (c *WorkerConnection) Disconnect(endpoint string) error {
 	c.connectionChan <- &connectionRequest{endpoint: endpoint, connect: false}
 	return <-c.connectionResultChan
+}
+
+// SetEndpoints connects to any new endpoints contained in the supplied list and disconnects
+// from any current endpoints not in the list.
+func (c *WorkerConnection) SetEndpoints(endpoint ...string) error {
+	toConnect := make([]string, 0, len(endpoint))
+	toDisconnect := make([]string, 0, len(endpoint))
+	setEndpoints := make(map[string]bool, len(endpoint))
+	c.connectionLock.RLock()
+	for _, endpoint := range endpoint {
+		setEndpoints[endpoint] = true
+		if _, ok := c.endpoints[endpoint]; !ok {
+			toConnect = append(toConnect, endpoint)
+		}
+	}
+	for endpoint := range c.endpoints {
+		if _, ok := setEndpoints[endpoint]; !ok {
+			toDisconnect = append(toDisconnect, endpoint)
+		}
+	}
+	c.connectionLock.RUnlock()
+	for _, endpoint := range toConnect {
+		if err := c.Connect(endpoint); err != nil {
+			return err
+		}
+	}
+	for _, endpoint := range toDisconnect {
+		if err := c.Disconnect(endpoint); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *WorkerConnection) handleConnectionRequest(socket *zmq.Socket, request *connectionRequest) {
@@ -276,18 +357,50 @@ func (c *WorkerConnection) run(socket *zmq.Socket) {
 }
 
 // Call calls a method on a worker and blocks until it receives a response. Use RegisterResponseType to automatically
-// convert responses into the correct type.
+// convert responses into the correct type. Use RegisterDefaultOptions to set a RequestOptions to use with a given
+// method.
 func (c *WorkerConnection) Call(method string, parameters interface{}) (response interface{}, err error) {
+	c.optionLock.RLock()
+	options := c.defaultOptions[method]
+	c.optionLock.RUnlock()
+	return c.CallWithOptions(method, parameters, options)
+}
+
+// CallWithOptions calls a method on a worker and blocks until it receives a response. Use RegisterResponseType to automatically
+// convert responses into the correct type. This method is like Call but allows the caller to specify RequestOptions.
+func (c *WorkerConnection) CallWithOptions(method string, parameters interface{}, options *RequestOptions) (response interface{}, err error) {
 	data, err := c.marshal(&Request{Method: method, Parameters: parameters})
 	if err != nil {
 		return
 	}
-	request := &WorkerRequest{ID: uuid.NewUUID(), Time: time.Now(), ResponseChan: make(chan []byte)}
+	if options == nil {
+		options = &GlobalDefaultRequestOptions
+	}
+	request := &workerRequest{ID: uuid.NewUUID(), Time: time.Now(), ResponseChan: make(chan []byte)}
 	c.requestLock.Lock()
 	c.requests[string(request.ID)] = request
 	c.requestLock.Unlock()
-	c.requestChannel <- [][]byte{[]byte{}, []byte(request.ID), data}
-	responseData := <-request.ResponseChan
+	var responseData []byte
+	retriesRemaining := options.RetryCount
+RetryLoop:
+	for {
+		var timeout <-chan time.Time
+		if options.Timeout > 0 {
+			timeout = time.After(options.Timeout)
+		}
+		c.requestChannel <- [][]byte{[]byte{}, []byte(request.ID), data}
+		select {
+		case responseData = <-request.ResponseChan:
+			break RetryLoop
+		case <-timeout:
+			if retriesRemaining > 0 {
+				retriesRemaining--
+				continue RetryLoop
+			} else {
+				return nil, ErrTimeout
+			}
+		}
+	}
 	response, err = c.unmarshal(responseData)
 	if err != nil {
 		return

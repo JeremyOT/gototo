@@ -119,24 +119,23 @@ func New(address string, count int) *Worker {
 	}
 }
 
-func (w *Worker) Shutdown() {
+// Stop stops the worker and waits until it is completely shutdown
+func (w *Worker) Stop() {
 	if w.quit != nil {
 		w.Quit()
 		w.Wait()
 	}
 }
 
+// Quit stops the worker
 func (w *Worker) Quit() {
 	defer close(w.quit)
 	w.quit = nil
 }
 
+// Wait waits for the worker to completely shutdown
 func (w *Worker) Wait() {
 	<-w.wait
-}
-
-func (w *Worker) SetLogger(l *log.Logger) {
-	w.logger = l
 }
 
 func (w *Worker) SetMarshalFunction(marshal MarshalFunction) {
@@ -159,22 +158,8 @@ func (w *Worker) SetConvertTypeDecoderConfig(config *mapstructure.DecoderConfig)
 	w.convertTypeDecoderConfig = config
 }
 
-func (w *Worker) writeLog(message ...interface{}) {
-	if w.logger != nil {
-		w.logger.Println(message)
-	} else {
-		log.Println(message)
-	}
-}
-
-func (w *Worker) panicLog(message ...interface{}) {
-	if w.logger != nil {
-		w.logger.Panicln(message)
-	} else {
-		log.Panicln(message)
-	}
-}
-
+// RegisterWorkerFunction adds a new worker function that will be invoked when requests
+// are received with the named method.
 func (w *Worker) RegisterWorkerFunction(name string, workerFunction WorkerFunction) {
 	w.registeredWorkerFunctions[name] = workerFunction
 }
@@ -216,6 +201,9 @@ func convertValue(inputType reflect.Type, input interface{}, customUnpack bool, 
 	return
 }
 
+// ConvertValue is a convenience method for converting a received interface{} to a specified type. It may
+// be used e.g. when a JSON request is parsed to a map[string]interface{} and you want to turn it into
+// a struct.
 func (w *Worker) ConvertValue(inputType reflect.Type, input interface{}) (output interface{}, err error) {
 	_, customUnpack := input.(Unpacker)
 	outputValue, err := convertValue(inputType, input, customUnpack, w.convertTypeDecoderConfig, w.convertTypeTagName)
@@ -235,37 +223,37 @@ func (w *Worker) MakeWorkerFunction(workerFunction interface{}) WorkerFunction {
 	function := reflect.ValueOf(workerFunction)
 	functionType := function.Type()
 	if functionType.Kind() != reflect.Func {
-		w.panicLog(fmt.Sprintf("Attempt to convert invalid type %#v to worker function", functionType))
+		log.Panicf("Attempt to convert invalid type %#v to worker function", functionType)
 	}
 	if functionType.IsVariadic() {
-		w.panicLog(fmt.Sprintf("Attempt to convert variadic function %#v to worker function", function))
+		log.Panicf("Attempt to convert variadic function %#v to worker function", function)
 	}
 	if functionType.NumIn() != 1 {
-		w.panicLog(fmt.Sprintf("Worker functions must accept one and only one argument: %#v", function))
+		log.Panicf("Worker functions must accept one and only one argument: %#v", function)
 	}
 	if functionType.NumOut() != 1 {
-		w.panicLog(fmt.Sprintf("Worker functions must only return one and only one result: %#v", function))
+		log.Panicf("Worker functions must only return one and only one result: %#v", function)
 	}
 	inputType := functionType.In(0)
 	if inputType.Kind() != reflect.Ptr {
-		w.panicLog(fmt.Sprintf("Worker functions must take a pointer to a struct as their argument: %#v", function))
+		log.Panicf("Worker functions must take a pointer to a struct as their argument: %#v", function)
 	}
 	validate := inputType.Implements(reflect.TypeOf((*Validator)(nil)).Elem())
 	customUnpack := inputType.Implements(reflect.TypeOf((*Unpacker)(nil)).Elem())
 	inputType = inputType.Elem()
 	if inputType.Kind() != reflect.Struct {
-		w.panicLog(fmt.Sprintf("Worker functions must take a pointer to a struct as their argument: %#v", function))
+		log.Panicf("Worker functions must take a pointer to a struct as their argument: %#v", function)
 	}
 	return func(input interface{}) (output interface{}) {
 		inputValue, err := convertValue(inputType, input, customUnpack, w.convertTypeDecoderConfig, w.convertTypeTagName)
 		if err != nil {
-			w.writeLog("Failed to decode:", err)
+			log.Println("Failed to decode:", err)
 			return &Response{Success: false, Error: fmt.Sprintf("Failed to decode: %s", err)}
 		}
 		parameters := inputValue.Interface()
 		if validate {
 			if err := parameters.(Validator).Validate(); err != nil {
-				w.writeLog("Validation failed:", err)
+				log.Println("Validation failed:", err)
 				return &Response{Success: false, Error: fmt.Sprintf("Validation failed: %s", err)}
 			}
 		}
@@ -276,9 +264,9 @@ func (w *Worker) MakeWorkerFunction(workerFunction interface{}) WorkerFunction {
 func (w *Worker) handlePanic(responseChannel chan [][]byte, message [][]byte) {
 	if r := recover(); r != nil {
 		errString := fmt.Sprintf("Panic while invoking worker function: %#v", r)
-		w.writeLog(errString)
+		log.Println(errString)
 		if responseData, err := w.marshal(&Response{Success: false, Error: errString}); err != nil {
-			w.writeLog("Error encoding response:", err)
+			log.Println("Error encoding response:", err)
 		} else {
 			message[len(message)-1] = responseData
 			responseChannel <- message
@@ -298,6 +286,7 @@ func (w *Worker) runFunction(responseChannel chan [][]byte, message [][]byte, pa
 	}
 }
 
+// Start runs the worker in a new go routine
 func (w *Worker) Start() (err error) {
 	w.wait = make(chan struct{})
 	w.quit = make(chan struct{})
@@ -310,6 +299,7 @@ func (w *Worker) Start() (err error) {
 	return
 }
 
+// Run runs the worker synchronously
 func (w *Worker) Run() {
 	w.wait = make(chan struct{})
 	w.quit = make(chan struct{})
@@ -320,6 +310,7 @@ func (w *Worker) Run() {
 	}
 	w.run(socket)
 }
+
 func (w *Worker) run(socket *zmq.Socket) {
 	defer socket.Close()
 	socket.SetRcvtimeo(w.passiveTimeout)
@@ -329,7 +320,7 @@ func (w *Worker) run(socket *zmq.Socket) {
 	sendResponse := func(response [][]byte) {
 		atomic.AddInt32(&w.runningWorkers, -1)
 		if _, err := socket.SendMessage(response); err != nil {
-			w.writeLog("Failed to send response:", err)
+			log.Println("Failed to send response:", err)
 		}
 		if atomic.LoadInt32(&w.runningWorkers) == 0 {
 			socket.SetRcvtimeo(w.passiveTimeout)
@@ -337,6 +328,7 @@ func (w *Worker) run(socket *zmq.Socket) {
 	}
 	for {
 		if atomic.LoadInt32(&w.runningWorkers) == w.maxWorkers {
+			// We're already running maxWorkers so block until a response is ready
 			select {
 			case response := <-responseChannel:
 				sendResponse(response)
@@ -361,12 +353,12 @@ func (w *Worker) run(socket *zmq.Socket) {
 			}
 			request, err := w.unmarshal(message[len(message)-1])
 			if err != nil {
-				w.writeLog("Received invalid message", err)
+				log.Println("Received invalid message", err)
 				break
 			}
 			workerFunction := w.registeredWorkerFunctions[request.Method]
 			if workerFunction == nil {
-				w.writeLog("Unregistered worker function:", request.Method)
+				log.Println("Unregistered worker function:", request.Method)
 				break
 			}
 			if atomic.LoadInt32(&w.runningWorkers) == 0 {
