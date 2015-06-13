@@ -164,7 +164,7 @@ func (w *Worker) RegisterWorkerFunction(name string, workerFunction WorkerFuncti
 	w.registeredWorkerFunctions[name] = workerFunction
 }
 
-func convertValue(inputType reflect.Type, input interface{}, customUnpack bool, config *mapstructure.DecoderConfig, defaultTagName string) (output reflect.Value, err error) {
+func convertValue(inputType reflect.Type, input interface{}, customUnpack bool, baseConfig *mapstructure.DecoderConfig, defaultTagName string) (output reflect.Value, err error) {
 	output = reflect.New(inputType)
 	parameters := output.Interface()
 	if customUnpack {
@@ -173,15 +173,15 @@ func convertValue(inputType reflect.Type, input interface{}, customUnpack bool, 
 		}
 	} else {
 		var config *mapstructure.DecoderConfig
-		if config != nil {
+		if baseConfig != nil {
 			config = &mapstructure.DecoderConfig{
-				Metadata:         config.Metadata,
+				Metadata:         baseConfig.Metadata,
 				Result:           parameters,
-				TagName:          config.TagName,
-				ErrorUnused:      config.ErrorUnused,
-				ZeroFields:       config.ZeroFields,
-				WeaklyTypedInput: config.WeaklyTypedInput,
-				DecodeHook:       config.DecodeHook,
+				TagName:          baseConfig.TagName,
+				ErrorUnused:      baseConfig.ErrorUnused,
+				ZeroFields:       baseConfig.ZeroFields,
+				WeaklyTypedInput: baseConfig.WeaklyTypedInput,
+				DecodeHook:       baseConfig.DecodeHook,
 			}
 		} else {
 			config = &mapstructure.DecoderConfig{
