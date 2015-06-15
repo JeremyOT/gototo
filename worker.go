@@ -6,6 +6,7 @@ import (
 	"log"
 	"reflect"
 	"runtime"
+	"runtime/debug"
 	"sync/atomic"
 	"time"
 
@@ -264,7 +265,7 @@ func (w *Worker) MakeWorkerFunction(workerFunction interface{}) WorkerFunction {
 func (w *Worker) handlePanic(responseChannel chan [][]byte, message [][]byte) {
 	if r := recover(); r != nil {
 		errString := fmt.Sprintf("Panic while invoking worker function: %#v", r)
-		log.Println(errString)
+		log.Println("Panic while invoking worker function:", errString, debug.Stack())
 		if responseData, err := w.marshal(&Response{Success: false, Error: errString}); err != nil {
 			log.Println("Error encoding response:", err)
 		} else {
