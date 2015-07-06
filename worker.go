@@ -130,8 +130,7 @@ func (w *Worker) Stop() {
 
 // Quit stops the worker
 func (w *Worker) Quit() {
-	defer close(w.quit)
-	w.quit = nil
+	close(w.quit)
 }
 
 // Wait waits for the worker to completely shutdown
