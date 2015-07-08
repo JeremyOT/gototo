@@ -1,4 +1,4 @@
-package gototo
+package httpworker
 
 import (
 	"encoding/json"
@@ -7,6 +7,8 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/JeremyOT/gototo"
 )
 
 type SampleType struct {
@@ -58,7 +60,7 @@ type WaitRequest struct {
 
 func TestConvert(t *testing.T) {
 
-	workerFunc := func(converted *SampleType) *Response {
+	workerFunc := func(converted *SampleType) *gototo.Response {
 		if converted.String != "hi" {
 			t.Error("Wrong String", converted.String)
 		}
@@ -74,9 +76,9 @@ func TestConvert(t *testing.T) {
 		if converted.Data.B != "Bye" {
 			t.Error("Wrong Data.B", converted.Data.B)
 		}
-		return &Response{Success: true}
+		return &gototo.Response{Success: true}
 	}
-	missingWorkerFunc := func(converted *SampleType) *Response {
+	missingWorkerFunc := func(converted *SampleType) *gototo.Response {
 		if converted.String != "" {
 			t.Error("Wrong String", converted.String)
 		}
@@ -92,9 +94,9 @@ func TestConvert(t *testing.T) {
 		if converted.Data.B != "" {
 			t.Error("Wrong Data.B", converted.Data.B)
 		}
-		return &Response{Success: true}
+		return &gototo.Response{Success: true}
 	}
-	w := New("", 0)
+	w := New("")
 	w.MakeWorkerFunction(workerFunc)(map[string]interface{}{
 		"string": "hi",
 		"bool":   true,
@@ -124,29 +126,29 @@ func TestConvert(t *testing.T) {
 		w.MakeWorkerFunction(func(i string) string { return "" })
 	})
 	checkPanics(t, func() {
-		w.MakeWorkerFunction(func(i ...*Response) *Response { return nil })
+		w.MakeWorkerFunction(func(i ...*gototo.Response) *gototo.Response { return nil })
 	})
 	checkPanics(t, func() {
-		w.MakeWorkerFunction(func(i *Response, j *Response) *Response { return nil })
+		w.MakeWorkerFunction(func(i *gototo.Response, j *gototo.Response) *gototo.Response { return nil })
 	})
 	checkPanics(t, func() {
-		w.MakeWorkerFunction(func(i *Response) (*Response, *Response) { return nil, nil })
+		w.MakeWorkerFunction(func(i *gototo.Response) (*gototo.Response, *gototo.Response) { return nil, nil })
 	})
 	checkPanics(t, func() {
-		w.MakeWorkerFunction(func(i *string) *Response { return nil })
+		w.MakeWorkerFunction(func(i *string) *gototo.Response { return nil })
 	})
-	validatingFunc := w.MakeWorkerFunction(func(i *SampleValidatedType) *Response { return nil })
-	if r := validatingFunc(map[string]interface{}{"string": "test"}).(*Response); r != nil {
+	validatingFunc := w.MakeWorkerFunction(func(i *SampleValidatedType) *gototo.Response { return nil })
+	if r := validatingFunc(map[string]interface{}{"string": "test"}).(*gototo.Response); r != nil {
 		t.Error("Unexpected non nil response:", r)
 	}
-	if r := validatingFunc(map[string]interface{}{}).(*Response); r == nil || r.Success {
+	if r := validatingFunc(map[string]interface{}{}).(*gototo.Response); r == nil || r.Success {
 		t.Error("Expected error:", r)
 	}
-	unpackingFunc := w.MakeWorkerFunction(func(i *SampleUnpackerType) *Response { return nil })
-	if r := unpackingFunc(map[string]string{"string": "test"}).(*Response); r != nil {
+	unpackingFunc := w.MakeWorkerFunction(func(i *SampleUnpackerType) *gototo.Response { return nil })
+	if r := unpackingFunc(map[string]string{"string": "test"}).(*gototo.Response); r != nil {
 		t.Error("Unexpected non nil response:", r)
 	}
-	if r := unpackingFunc(map[string]interface{}{"string": 42}).(*Response); r == nil || r.Success {
+	if r := unpackingFunc(map[string]interface{}{"string": 42}).(*gototo.Response); r == nil || r.Success {
 		t.Error("Expected error:", r)
 	}
 	d := &struct{ Time time.Duration }{Time: 5 * time.Second}
@@ -161,43 +163,29 @@ func TestConvert(t *testing.T) {
 }
 
 func TestCall(t *testing.T) {
-	tcpAddr, _ := net.ResolveTCPAddr("tcp", ":0")
-	l, err := net.ListenTCP("tcp", tcpAddr)
-	if err != nil {
-		t.Fatal("Failed to create TCP listener:", err)
-	}
-	tcpAddr = l.Addr().(*net.TCPAddr)
-	err = l.Close()
-	if err != nil {
-		t.Fatal("Failed to create TCP listener:", err)
-	}
-	worker := New(fmt.Sprintf("tcp://*:%d", tcpAddr.Port), 10)
-	worker.RegisterWorkerFunction("test_func", worker.MakeWorkerFunction(func(i *SampleValidatedType) *Response {
+	worker := New(":0")
+	worker.RegisterWorkerFunction("test_func", worker.MakeWorkerFunction(func(i *SampleValidatedType) *gototo.Response {
 		if i.String != "fail" {
-			return CreateSuccessResponse(i)
+			return gototo.CreateSuccessResponse(i)
 		} else {
-			return CreateErrorResponse(errors.New("Empty string!"))
+			return gototo.CreateErrorResponse(errors.New("Empty string!"))
 		}
 	}))
-	worker.RegisterWorkerFunction("slow_test_func", worker.MakeWorkerFunction(func(i *WaitRequest) *Response {
+	worker.RegisterWorkerFunction("slow_test_func", worker.MakeWorkerFunction(func(i *WaitRequest) *gototo.Response {
 		time.Sleep(i.Timeout)
-		return CreateSuccessResponse(i)
+		return gototo.CreateSuccessResponse(i)
 	}))
-	err = worker.Start()
+	err := worker.Start()
+	tcpAddr := worker.ConnectedAddress().(*net.TCPAddr)
 	if err != nil {
 		t.Fatal("Failed to start worker:", err)
 	}
-	time.Sleep(100 * time.Millisecond)
 	defer worker.Stop()
-	addr := fmt.Sprintf("tcp://127.0.0.1:%d", tcpAddr.Port)
+	addr := fmt.Sprintf("http://127.0.0.1:%d", tcpAddr.Port)
 	connection := NewConnection(addr)
 	connection.RegisterResponseType("test_func", &SampleValidatedType{}, true)
 	connection.RegisterResponseType("slow_test_func", &WaitRequest{}, true)
-	connection.RegisterDefaultOptions("slow_test_func", &RequestOptions{Timeout: 100 * time.Millisecond, RetryCount: 3})
-	err = connection.Start()
-	if err != nil {
-		t.Fatal("Failed to start connection:", err)
-	}
+	connection.RegisterDefaultOptions("slow_test_func", &gototo.RequestOptions{Timeout: 100 * time.Millisecond, RetryCount: 3})
 	err = connection.Disconnect(addr)
 	if err != nil {
 		t.Fatal("Failed to disconnect:", err)
@@ -233,7 +221,6 @@ func TestCall(t *testing.T) {
 	if len(connection.GetEndpoints()) != 1 {
 		t.Fatal("Expected one connections")
 	}
-	defer connection.Stop()
 	resp, err := connection.Call("test_func", &SampleValidatedType{String: "test request string"})
 	if err != nil {
 		t.Fatal("Failed to decode response:", err)
@@ -247,7 +234,7 @@ func TestCall(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Expected error: %#v %#v\n", resp, err)
 	} else {
-		if responseError, ok := err.(*ResponseError); !ok {
+		if responseError, ok := err.(*gototo.ResponseError); !ok {
 			t.Fatalf("Expected *ResponseError: %#v\n", err)
 		} else if responseError.Error() != "Validation failed: Empty String field" {
 			t.Fatalf("Expected 'Validation failed: Empty String field': %#v\n", err)
@@ -257,7 +244,7 @@ func TestCall(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Expected error: %#v %#v\n", resp, err)
 	} else {
-		if responseError, ok := err.(*ResponseError); !ok {
+		if responseError, ok := err.(*gototo.ResponseError); !ok {
 			t.Fatalf("Expected *ResponseError: %#v\n", err)
 		} else if responseError.Error() != "Empty string!" {
 			t.Fatalf("Expected 'Empty string!': %#v\n", err)
@@ -268,7 +255,28 @@ func TestCall(t *testing.T) {
 		t.Error("Unexpected response error:", err)
 	}
 	resp, err = connection.Call("slow_test_func", &WaitRequest{Timeout: 1 * time.Second})
-	if err != ErrTimeout {
+	if err != gototo.ErrTimeout {
 		t.Error("Expected timeout, found:", err, resp)
+	}
+}
+
+func BenchmarkRequests(b *testing.B) {
+	worker := New(":0")
+	worker.RegisterWorkerFunction("test_func", worker.MakeWorkerFunction(func(i *SampleType) *gototo.Response {
+		return gototo.CreateSuccessResponse(i)
+	}))
+	err := worker.Start()
+	tcpAddr := worker.ConnectedAddress().(*net.TCPAddr)
+	if err != nil {
+		b.Fatal("Failed to start worker:", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	defer worker.Stop()
+	addr := fmt.Sprintf("http://127.0.0.1:%d", tcpAddr.Port)
+	connection := NewConnection(addr)
+	connection.RegisterResponseType("test_func", &SampleType{}, true)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		connection.Call("test_func", &SampleType{String: ""})
 	}
 }
