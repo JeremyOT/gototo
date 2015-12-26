@@ -9,6 +9,53 @@ import (
 	"github.com/mitchellh/mapstructure"
 )
 
+type DecodeHookFunc interface{}
+
+// DecoderConfig is the configuration that is used to create a new decoder
+// and allows customization of various aspects of decoding.
+type DecoderConfig struct {
+	// DecodeHook, if set, will be called before any decoding and any
+	// type conversion (if WeaklyTypedInput is on). This lets you modify
+	// the values before they're set down onto the resulting struct.
+	//
+	// If an error is returned, the entire decode will fail with that
+	// error.
+	DecodeHook DecodeHookFunc
+
+	// If ErrorUnused is true, then it is an error for there to exist
+	// keys in the original map that were unused in the decoding process
+	// (extra keys).
+	ErrorUnused bool
+
+	// ZeroFields, if set to true, will zero fields before writing them.
+	// For example, a map will be emptied before decoded values are put in
+	// it. If this is false, a map will be merged.
+	ZeroFields bool
+
+	// If WeaklyTypedInput is true, the decoder will make the following
+	// "weak" conversions:
+	//
+	//   - bools to string (true = "1", false = "0")
+	//   - numbers to string (base 10)
+	//   - bools to int/uint (true = 1, false = 0)
+	//   - strings to int/uint (base implied by prefix)
+	//   - int to bool (true if value != 0)
+	//   - string to bool (accepts: 1, t, T, TRUE, true, True, 0, f, F,
+	//     FALSE, false, False. Anything else is an error)
+	//   - empty array = empty map and vice versa
+	//   - negative numbers to overflowed uint values (base 10)
+	//
+	WeaklyTypedInput bool
+
+	// Result is a pointer to the struct that will contain the decoded
+	// value.
+	Result interface{}
+
+	// The tag name that mapstructure reads for field names. This
+	// defaults to "mapstructure"
+	TagName string
+}
+
 // WorkerFunction may be registered with a worker
 type WorkerFunction func(interface{}) interface{}
 
@@ -90,7 +137,7 @@ type Worker interface {
 	SetMarshalFunction(marshal MarshalFunction)
 	SetUnmarshalFunction(unmarshal UnmarshalFunction)
 	SetConvertTypeTagName(tagName string)
-	SetConvertTypeDecoderConfig(config *mapstructure.DecoderConfig)
+	SetConvertTypeDecoderConfig(config *DecoderConfig)
 	RegisterWorkerFunction(name string, workerFunction WorkerFunction)
 
 	// ConvertValue is a convenience method for converting a received interface{} to a specified type. It may
@@ -112,7 +159,7 @@ type Worker interface {
 	Run() (err error)
 }
 
-func ConvertValue(inputType reflect.Type, input interface{}, customUnpack bool, baseConfig *mapstructure.DecoderConfig, defaultTagName string) (output reflect.Value, err error) {
+func ConvertValue(inputType reflect.Type, input interface{}, customUnpack bool, baseConfig *DecoderConfig, defaultTagName string) (output reflect.Value, err error) {
 	output = reflect.New(inputType)
 	parameters := output.Interface()
 	if customUnpack {
@@ -123,7 +170,6 @@ func ConvertValue(inputType reflect.Type, input interface{}, customUnpack bool, 
 		var config *mapstructure.DecoderConfig
 		if baseConfig != nil {
 			config = &mapstructure.DecoderConfig{
-				Metadata:         baseConfig.Metadata,
 				Result:           parameters,
 				TagName:          baseConfig.TagName,
 				ErrorUnused:      baseConfig.ErrorUnused,
@@ -154,7 +200,7 @@ func ConvertValue(inputType reflect.Type, input interface{}, customUnpack bool, 
 // as its only argument and return one value. Internally, github.com/mitchellh/mapstructure
 // is used to convert the input parameters to a struct. MakeWorkerFunction will panic
 // if called with an incorrect type.
-func MakeWorkerFunction(workerFunction interface{}, convertTypeDecoderConfig *mapstructure.DecoderConfig, convertTypeTagName string) WorkerFunction {
+func MakeWorkerFunction(workerFunction interface{}, convertTypeDecoderConfig *DecoderConfig, convertTypeTagName string) WorkerFunction {
 	function := reflect.ValueOf(workerFunction)
 	functionType := function.Type()
 	if functionType.Kind() != reflect.Func {

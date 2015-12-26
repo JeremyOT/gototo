@@ -7,8 +7,6 @@ import (
 	"log"
 	"reflect"
 	"time"
-
-	"github.com/mitchellh/mapstructure"
 )
 
 var responseType = reflect.TypeOf(Response{})
@@ -81,7 +79,7 @@ type WorkerConnection interface {
 
 	// SetConvertTypeDecoderConfig sets the mapstructure config to use when decoding.
 	// if set, it takes precidence over SetConvertTypeTagName
-	SetConvertTypeDecoderConfig(config *mapstructure.DecoderConfig)
+	SetConvertTypeDecoderConfig(config *DecoderConfig)
 
 	// RegisterResponseType ensures that responses from calls to the named method are converted
 	// to the proper type before being returned to the caller. If wrappedInResponse is true then
@@ -125,7 +123,7 @@ type WorkerConnection interface {
 	CallWithOptions(method string, parameters interface{}, options *RequestOptions) (response interface{}, err error)
 }
 
-func CreateConverter(i interface{}, wrappedInResponse bool, convertTypeDecoderConfig *mapstructure.DecoderConfig, convertTypeTagName string) ConverterFunction {
+func CreateConverter(i interface{}, wrappedInResponse bool, convertTypeDecoderConfig *DecoderConfig, convertTypeTagName string) ConverterFunction {
 	typ := reflect.TypeOf(i)
 	if typ.Kind() != reflect.Ptr {
 		log.Panicf("Only pointers to structs may be registered as a response type: %#v", typ)

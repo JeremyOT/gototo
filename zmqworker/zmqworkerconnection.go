@@ -13,7 +13,6 @@ import (
 	"github.com/JeremyOT/gototo"
 
 	zmq "github.com/pebbe/zmq4"
-	"github.com/mitchellh/mapstructure"
 )
 
 type connectionRequest struct {
@@ -46,7 +45,7 @@ type WorkerConnection struct {
 	registeredConverters     map[string]gototo.ConverterFunction
 	defaultOptions           map[string]*gototo.RequestOptions
 	convertTypeTagName       string
-	convertTypeDecoderConfig *mapstructure.DecoderConfig
+	convertTypeDecoderConfig *gototo.DecoderConfig
 	connectionChan           chan *connectionRequest
 	connectionResultChan     chan error
 }
@@ -87,9 +86,9 @@ func (c *WorkerConnection) SetConvertTypeTagName(tagName string) {
 	c.convertTypeTagName = tagName
 }
 
-// SetConvertTypeDecoderConfig sets the mapstructure config to use when decoding.
+// SetConvertTypeDecoderConfig sets the config to use when decoding.
 // if set, it takes precidence over SetConvertTypeTagName
-func (c *WorkerConnection) SetConvertTypeDecoderConfig(config *mapstructure.DecoderConfig) {
+func (c *WorkerConnection) SetConvertTypeDecoderConfig(config *gototo.DecoderConfig) {
 	c.convertTypeDecoderConfig = config
 }
 

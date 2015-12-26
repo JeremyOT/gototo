@@ -14,7 +14,6 @@ import (
 
 	"github.com/JeremyOT/gototo"
 	zmq "github.com/pebbe/zmq4"
-	"github.com/mitchellh/mapstructure"
 )
 
 // Worker listens for requests and invokes registered goroutines when called.
@@ -30,7 +29,7 @@ type Worker struct {
 	marshal                   gototo.MarshalFunction
 	unmarshal                 gototo.UnmarshalFunction
 	convertTypeTagName        string
-	convertTypeDecoderConfig  *mapstructure.DecoderConfig
+	convertTypeDecoderConfig  *gototo.DecoderConfig
 }
 
 // Create a new worker bound to address that will run at most count functions at a time.
@@ -84,7 +83,7 @@ func (w *Worker) SetConvertTypeTagName(tagName string) {
 
 // SetConvertTypeDecoderConfig sets the mapstructure config to use when decoding.
 // if set, it takes precidence over SetConvertTypeTagName
-func (w *Worker) SetConvertTypeDecoderConfig(config *mapstructure.DecoderConfig) {
+func (w *Worker) SetConvertTypeDecoderConfig(config *gototo.DecoderConfig) {
 	w.convertTypeDecoderConfig = config
 }
 

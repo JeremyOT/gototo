@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/JeremyOT/gototo"
-	"github.com/mitchellh/mapstructure"
 )
 
 // WorkerConnection is used to make RPCs to remote workers. If multiple workers are connected,
@@ -35,7 +34,7 @@ type WorkerConnection struct {
 	registeredConverters     map[string]gototo.ConverterFunction
 	defaultOptions           map[string]*gototo.RequestOptions
 	convertTypeTagName       string
-	convertTypeDecoderConfig *mapstructure.DecoderConfig
+	convertTypeDecoderConfig *gototo.DecoderConfig
 	pendingRequestCount      int32
 }
 
@@ -76,7 +75,7 @@ func (c *WorkerConnection) SetConvertTypeTagName(tagName string) {
 
 // SetConvertTypeDecoderConfig sets the mapstructure config to use when decoding.
 // if set, it takes precidence over SetConvertTypeTagName
-func (c *WorkerConnection) SetConvertTypeDecoderConfig(config *mapstructure.DecoderConfig) {
+func (c *WorkerConnection) SetConvertTypeDecoderConfig(config *gototo.DecoderConfig) {
 	c.convertTypeDecoderConfig = config
 }
 
