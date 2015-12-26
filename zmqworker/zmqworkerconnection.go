@@ -12,7 +12,7 @@ import (
 	"code.google.com/p/go-uuid/uuid"
 	"github.com/JeremyOT/gototo"
 
-	zmq "github.com/JeremyOT/gototo/internal/github.com/pebbe/zmq4"
+	zmq "github.com/pebbe/zmq4"
 	"github.com/mitchellh/mapstructure"
 )
 

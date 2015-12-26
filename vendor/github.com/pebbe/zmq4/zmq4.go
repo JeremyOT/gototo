@@ -78,11 +78,12 @@ var (
 
 	major, minor, patch int
 
-	ErrorContextClosed     = errors.New("Context is closed")
-	ErrorSocketClosed      = errors.New("Socket is closed")
-	ErrorMoreExpected      = errors.New("More expected")
-	ErrorNotImplemented405 = errors.New("Not implemented, requires 0MQ version 4.0.5")
-	ErrorNotImplemented41  = errors.New("Not implemented, requires 0MQ version 4.1")
+	ErrorContextClosed         = errors.New("Context is closed")
+	ErrorSocketClosed          = errors.New("Socket is closed")
+	ErrorMoreExpected          = errors.New("More expected")
+	ErrorNotImplemented405     = errors.New("Not implemented, requires 0MQ version 4.0.5")
+	ErrorNotImplemented41      = errors.New("Not implemented, requires 0MQ version 4.1")
+	ErrorNotImplementedWindows = errors.New("Not implemented on Windows")
 )
 
 func init() {
@@ -239,7 +240,7 @@ the default context. If your application is using only the inproc
 transport for messaging you may set this to zero, otherwise set it to at
 least one. This option only applies before creating any sockets.
 
-Default value   1
+Default value: 1
 */
 func SetIoThreads(n int) error {
 	return defaultCtx.SetIoThreads(n)
@@ -251,16 +252,57 @@ your application is using only the inproc transport for messaging you
 may set this to zero, otherwise set it to at least one. This option only
 applies before creating any sockets.
 
-Default value   1
+Default value: 1
 */
 func (ctx *Context) SetIoThreads(n int) error {
 	return setOption(ctx, C.ZMQ_IO_THREADS, n)
 }
 
 /*
+Sets the scheduling policy for default context’s thread pool.
+
+This option requires ZeroMQ version 4.1, and is not available on Windows.
+
+Supported values for this option can be found in sched.h file, or at
+http://man7.org/linux/man-pages/man2/sched_setscheduler.2.html
+
+This option only applies before creating any sockets on the context.
+
+Default value: -1
+
+Returns ErrorNotImplemented41 with ZeroMQ version < 4.1
+
+Returns ErrorNotImplementedWindows on Windows
+*/
+func SetThreadSchedPolicy(n int) error {
+	return defaultCtx.SetThreadSchedPolicy(n)
+}
+
+/*
+Sets scheduling priority for default context’s thread pool.
+
+This option requires ZeroMQ version 4.1, and is not available on Windows.
+
+Supported values for this option depend on chosen scheduling policy.
+Details can be found in sched.h file, or at
+http://man7.org/linux/man-pages/man2/sched_setscheduler.2.html
+
+This option only applies before creating any sockets on the context.
+
+Default value: -1
+
+Returns ErrorNotImplemented41 with ZeroMQ version < 4.1
+
+Returns ErrorNotImplementedWindows on Windows
+*/
+func SetThreadPriority(n int) error {
+	return defaultCtx.SetThreadPriority(n)
+}
+
+/*
 Sets the maximum number of sockets allowed in the default context.
 
-Default value   1024
+Default value: 1024
 */
 func SetMaxSockets(n int) error {
 	return defaultCtx.SetMaxSockets(n)
@@ -269,7 +311,7 @@ func SetMaxSockets(n int) error {
 /*
 Sets the maximum number of sockets allowed.
 
-Default value   1024
+Default value: 1024
 */
 func (ctx *Context) SetMaxSockets(n int) error {
 	return setOption(ctx, C.ZMQ_MAX_SOCKETS, n)
@@ -280,7 +322,7 @@ Sets the IPv6 value for all sockets created in the default context from this poi
 A value of true means IPv6 is enabled, while false means the socket will use only IPv4.
 When IPv6 is enabled, a socket will connect to, or accept connections from, both IPv4 and IPv6 hosts.
 
-Default value	false
+Default value: false
 */
 func SetIpv6(i bool) error {
 	return defaultCtx.SetIpv6(i)
@@ -291,7 +333,7 @@ Sets the IPv6 value for all sockets created in the context from this point onwar
 A value of true means IPv6 is enabled, while false means the socket will use only IPv4.
 When IPv6 is enabled, a socket will connect to, or accept connections from, both IPv4 and IPv6 hosts.
 
-Default value	false
+Default value: false
 */
 func (ctx *Context) SetIpv6(i bool) error {
 	n := 0
@@ -640,7 +682,7 @@ func (soc *Socket) Connect(endpoint string) error {
 /*
 Disconnect a socket.
 
-For a description of endpoint, see: http://api.zeromq.org/4-1:zmq-connect#toc2
+For a description of endpoint, see: http://api.zeromq.org/4-1:zmq-disconnect#toc2
 */
 func (soc *Socket) Disconnect(endpoint string) error {
 	if !soc.opened {

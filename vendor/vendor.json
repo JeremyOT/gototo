@@ -1,0 +1,21 @@
+{
+	"comment": "",
+	"ignore": "test",
+	"package": [
+		{
+			"path": "code.google.com/p/go-uuid/uuid",
+			"revision": "35bc42037350",
+			"revisionTime": "2014-12-02T10:54:02-06:00"
+		},
+		{
+			"path": "github.com/mitchellh/mapstructure",
+			"revision": "bb4fbaf540ca2f7057d3adb5765784d24d9fd801",
+			"revisionTime": "2015-05-29T09:16:59-07:00"
+		},
+		{
+			"path": "github.com/pebbe/zmq4",
+			"revision": "1c9da3d5ecf6e28ee80ad75df60d772e19e44ef5",
+			"revisionTime": "2015-12-22T18:00:12+01:00"
+		}
+	]
+}
