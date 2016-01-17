@@ -9,10 +9,34 @@ import (
 	"github.com/mitchellh/mapstructure"
 )
 
+const (
+	// CodeDecodeFailed type conversion failed
+	CodeDecodeFailed = -50
+	// CodeValidationFailed post-decode type validation failed
+	CodeValidationFailed = -51
+)
+
+// DecodeHookFunc is the callback function that can be used for
+// data transformations. See "DecodeHook" in the DecoderConfig
+// struct.
+//
+// The type should be DecodeHookFuncType or DecodeHookFuncKind.
+// Either is accepted. Types are a superset of Kinds (Types can return
+// Kinds) and are generally a richer thing to use, but Kinds are simpler
+// if you only need those.
+//
+// The reason DecodeHookFunc is multi-typed is for backwards compatibility:
+// we started with Kinds and then realized Types were the better solution,
+// but have a promise to not break backwards compat so we now support
+// both.
+//
+// From github.com/mitchellh/mapstructure
 type DecodeHookFunc interface{}
 
 // DecoderConfig is the configuration that is used to create a new decoder
 // and allows customization of various aspects of decoding.
+//
+// From github.com/mitchellh/mapstructure
 type DecoderConfig struct {
 	// DecodeHook, if set, will be called before any decoding and any
 	// type conversion (if WeaklyTypedInput is on). This lets you modify
@@ -20,16 +44,22 @@ type DecoderConfig struct {
 	//
 	// If an error is returned, the entire decode will fail with that
 	// error.
+	//
+	// From github.com/mitchellh/mapstructure
 	DecodeHook DecodeHookFunc
 
 	// If ErrorUnused is true, then it is an error for there to exist
 	// keys in the original map that were unused in the decoding process
 	// (extra keys).
+	//
+	// From github.com/mitchellh/mapstructure
 	ErrorUnused bool
 
 	// ZeroFields, if set to true, will zero fields before writing them.
 	// For example, a map will be emptied before decoded values are put in
 	// it. If this is false, a map will be merged.
+	//
+	// From github.com/mitchellh/mapstructure
 	ZeroFields bool
 
 	// If WeaklyTypedInput is true, the decoder will make the following
@@ -45,14 +75,20 @@ type DecoderConfig struct {
 	//   - empty array = empty map and vice versa
 	//   - negative numbers to overflowed uint values (base 10)
 	//
+	//
+	// From github.com/mitchellh/mapstructure
 	WeaklyTypedInput bool
 
 	// Result is a pointer to the struct that will contain the decoded
 	// value.
+	//
+	// From github.com/mitchellh/mapstructure
 	Result interface{}
 
 	// The tag name that mapstructure reads for field names. This
 	// defaults to "mapstructure"
+	//
+	// From github.com/mitchellh/mapstructure
 	TagName string
 }
 
@@ -66,6 +102,7 @@ type MarshalFunction func(interface{}) ([]byte, error)
 // UnmarshalFunction converts a byte slice to a worker invocation payload.
 type UnmarshalFunction func([]byte) (*Request, error)
 
+// UnmarshalJSON in an UnmarshalFunction for JSON
 func UnmarshalJSON(buf []byte) (data *Request, err error) {
 	err = json.Unmarshal(buf, &data)
 	return
@@ -74,9 +111,10 @@ func UnmarshalJSON(buf []byte) (data *Request, err error) {
 // Response is a general response container that will be returned with Success = false
 // if any errors are encountered while attempting to call a type safe function.
 type Response struct {
-	Success bool        `json:"success"`
-	Error   string      `json:"error,omitempty"`
-	Result  interface{} `json:"result,omitempty"`
+	Success   bool        `json:"success"`
+	Error     string      `json:"error,omitempty"`
+	ErrorCode int         `json:"error_code,omitempty"`
+	Result    interface{} `json:"result,omitempty"`
 }
 
 // CreateErrorResponse creates a new response based on an error. If err is nil, then
@@ -85,9 +123,11 @@ type Response struct {
 func CreateErrorResponse(err error) *Response {
 	if err == nil {
 		return &Response{Success: true}
-	} else {
-		return &Response{Success: false, Error: err.Error()}
 	}
+	if coded, ok := err.(CodedError); ok {
+		return &Response{Success: false, Error: coded.Error(), ErrorCode: coded.Code()}
+	}
+	return &Response{Success: false, Error: err.Error()}
 }
 
 // CreateSuccessResponse creates a new successful response with the supplied parameter
@@ -102,15 +142,41 @@ func CreateSuccessResponse(result interface{}) *Response {
 func CreateResponse(result interface{}, err error) *Response {
 	if err == nil {
 		return &Response{Success: true, Result: result}
-	} else {
-		return &Response{Success: false, Error: err.Error()}
 	}
+	if coded, ok := err.(CodedError); ok {
+		return &Response{Success: false, Error: coded.Error(), ErrorCode: coded.Code()}
+	}
+	return &Response{Success: false, Error: err.Error()}
 }
 
 // Request is a general request container. It has a Method identifier and Parameters.
 type Request struct {
 	Method     string      `json:"method"`
 	Parameters interface{} `json:"parameters"`
+}
+
+// CodedError conforms to the error interface, but supports an additional response code.
+type CodedError interface {
+	error
+	Code() int
+}
+
+type codedError struct {
+	message string
+	code    int
+}
+
+func (e *codedError) Error() string {
+	return e.message
+}
+
+func (e *codedError) Code() int {
+	return e.code
+}
+
+// NewCodedError creates a new error with the given message and code.
+func NewCodedError(message string, code int) CodedError {
+	return &codedError{message: message, code: code}
 }
 
 // Validator allows automatic validation when calling type safe functions. If implemented
@@ -128,6 +194,7 @@ type Unpacker interface {
 	Unpack(interface{}) error
 }
 
+// Worker is an RPC server. Functions registered with the worker may be called by a connected WorkerConnection.
 type Worker interface {
 	// Stop stops the worker and waits until it is completely shutdown
 	Stop()
@@ -139,6 +206,7 @@ type Worker interface {
 	SetConvertTypeTagName(tagName string)
 	SetConvertTypeDecoderConfig(config *DecoderConfig)
 	RegisterWorkerFunction(name string, workerFunction WorkerFunction)
+	SetLogMetrics(logMetrics bool)
 
 	// ConvertValue is a convenience method for converting a received interface{} to a specified type. It may
 	// be used e.g. when a JSON request is parsed to a map[string]interface{} and you want to turn it into
@@ -159,6 +227,7 @@ type Worker interface {
 	Run() (err error)
 }
 
+// ConvertValue converts input (e.g. a map[string]interface{}) to an instance of inputType.
 func ConvertValue(inputType reflect.Type, input interface{}, customUnpack bool, baseConfig *DecoderConfig, defaultTagName string) (output reflect.Value, err error) {
 	output = reflect.New(inputType)
 	parameters := output.Interface()
@@ -229,13 +298,13 @@ func MakeWorkerFunction(workerFunction interface{}, convertTypeDecoderConfig *De
 		inputValue, err := ConvertValue(inputType, input, customUnpack, convertTypeDecoderConfig, convertTypeTagName)
 		if err != nil {
 			log.Println("Failed to decode:", err)
-			return &Response{Success: false, Error: fmt.Sprintf("Failed to decode: %s", err)}
+			return &Response{Success: false, Error: fmt.Sprintf("Failed to decode: %s", err), ErrorCode: CodeDecodeFailed}
 		}
 		parameters := inputValue.Interface()
 		if validate {
 			if err := parameters.(Validator).Validate(); err != nil {
 				log.Println("Validation failed:", err)
-				return &Response{Success: false, Error: fmt.Sprintf("Validation failed: %s", err)}
+				return &Response{Success: false, Error: fmt.Sprintf("Validation failed: %s", err), ErrorCode: CodeValidationFailed}
 			}
 		}
 		return function.Call([]reflect.Value{inputValue})[0].Interface()

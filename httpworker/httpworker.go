@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"reflect"
 	"runtime/debug"
+	"time"
 
 	"github.com/JeremyOT/gototo"
 )
@@ -29,6 +30,7 @@ type Worker struct {
 	convertTypeDecoderConfig  *gototo.DecoderConfig
 	marshalMap                map[string]gototo.MarshalFunction
 	unmarshalMap              map[string]gototo.UnmarshalFunction
+	logMetrics                bool
 }
 
 // Create a new worker bound to laddr that will run at most count functions at a time.
@@ -95,6 +97,11 @@ func (w *Worker) SetConvertTypeTagName(tagName string) {
 // if set, it takes precidence over SetConvertTypeTagName
 func (w *Worker) SetConvertTypeDecoderConfig(config *gototo.DecoderConfig) {
 	w.convertTypeDecoderConfig = config
+}
+
+// SetLogMetrics enables or disables metric logging
+func (w *Worker) SetLogMetrics(logMetrics bool) {
+	w.logMetrics = logMetrics
 }
 
 // RegisterWorkerFunction adds a new worker function that will be invoked when requests
@@ -201,7 +208,11 @@ func (w *Worker) handleRequest(writer http.ResponseWriter, request *http.Request
 		w.writeResponse(writer, contentType, gototo.CreateErrorResponse(fmt.Errorf("No method found: %s", requestData.Method)), 404)
 		return
 	}
+	startTime := time.Now()
 	result := workerFunction(requestData.Parameters)
+	if w.logMetrics {
+		log.Println("Request", requestData.Method, "finished in", time.Now().Sub(startTime))
+	}
 	w.writeResponse(writer, contentType, result, 200)
 }
 

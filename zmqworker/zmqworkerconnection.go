@@ -67,6 +67,7 @@ func NewConnection(endpoints ...string) *WorkerConnection {
 		registeredConverters: make(map[string]gototo.ConverterFunction),
 		requestChannel:       make(chan [][]byte),
 		defaultOptions:       make(map[string]*gototo.RequestOptions),
+		convertTypeTagName:   "json",
 	}
 }
 

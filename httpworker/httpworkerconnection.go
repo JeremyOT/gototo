@@ -52,6 +52,7 @@ func NewConnection(endpoints ...string) *WorkerConnection {
 		contentType:          "application/json",
 		registeredConverters: make(map[string]gototo.ConverterFunction),
 		defaultOptions:       make(map[string]*gototo.RequestOptions),
+		convertTypeTagName:   "json",
 	}
 	c.updateEndpoints()
 	return c

@@ -13,12 +13,18 @@ var responseType = reflect.TypeOf(Response{})
 
 type ResponseError struct {
 	text    string
+	code    int
 	timeout bool
 }
 
 // Error returns the message from the error
 func (err *ResponseError) Error() string {
 	return err.text
+}
+
+// Code returns the error code from the error
+func (err *ResponseError) Code() int {
+	return err.code
 }
 
 // Timeout returns true if the error was caused by a timeout
@@ -141,7 +147,7 @@ func CreateConverter(i interface{}, wrappedInResponse bool, convertTypeDecoderCo
 			}
 			parsedResponse := responseValue.Interface().(*Response)
 			if !parsedResponse.Success {
-				return nil, &ResponseError{text: parsedResponse.Error}
+				return nil, &ResponseError{text: parsedResponse.Error, code: parsedResponse.ErrorCode}
 			}
 			input = parsedResponse.Result
 		}

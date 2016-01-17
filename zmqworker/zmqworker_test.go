@@ -4,8 +4,8 @@ package zmqworker
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
+	"log"
 	"net"
 	"testing"
 	"time"
@@ -176,13 +176,13 @@ func TestCall(t *testing.T) {
 		t.Fatal("Failed to create TCP listener:", err)
 	}
 	worker := New(fmt.Sprintf("tcp://*:%d", tcpAddr.Port), 10)
+	worker.SetLogMetrics(true)
 	var _ gototo.Worker = worker
 	worker.RegisterWorkerFunction("test_func", worker.MakeWorkerFunction(func(i *SampleValidatedType) *gototo.Response {
 		if i.String != "fail" {
 			return gototo.CreateSuccessResponse(i)
-		} else {
-			return gototo.CreateErrorResponse(errors.New("Empty string!"))
 		}
+		return gototo.CreateErrorResponse(gototo.NewCodedError("Empty string!", 42))
 	}))
 	worker.RegisterWorkerFunction("slow_test_func", worker.MakeWorkerFunction(func(i *WaitRequest) *gototo.Response {
 		time.Sleep(i.Timeout)
@@ -257,6 +257,9 @@ func TestCall(t *testing.T) {
 			t.Fatalf("Expected *ResponseError: %#v\n", err)
 		} else if responseError.Error() != "Validation failed: Empty String field" {
 			t.Fatalf("Expected 'Validation failed: Empty String field': %#v\n", err)
+		} else if responseError.Code() != gototo.CodeValidationFailed {
+			log.Printf("%#v", responseError)
+			t.Fatalf("Expected validation failed code, found %d", responseError.Code())
 		}
 	}
 	resp, err = connection.Call("test_func", &SampleValidatedType{String: "fail"})
@@ -267,6 +270,8 @@ func TestCall(t *testing.T) {
 			t.Fatalf("Expected *ResponseError: %#v\n", err)
 		} else if responseError.Error() != "Empty string!" {
 			t.Fatalf("Expected 'Empty string!': %#v\n", err)
+		} else if responseError.Code() != 42 {
+			t.Fatalf("Expected error code 42, found %d", responseError.Code())
 		}
 	}
 	resp, err = connection.Call("slow_test_func", &WaitRequest{Timeout: 200 * time.Millisecond})

@@ -30,9 +30,10 @@ type Worker struct {
 	unmarshal                 gototo.UnmarshalFunction
 	convertTypeTagName        string
 	convertTypeDecoderConfig  *gototo.DecoderConfig
+	logMetrics                bool
 }
 
-// Create a new worker bound to address that will run at most count functions at a time.
+// New creates a new worker bound to address that will run at most count functions at a time.
 // If count == 0, it will default to runtime.NumCPU().
 func New(address string, count int) *Worker {
 	if count == 0 {
@@ -87,6 +88,11 @@ func (w *Worker) SetConvertTypeDecoderConfig(config *gototo.DecoderConfig) {
 	w.convertTypeDecoderConfig = config
 }
 
+// SetLogMetrics enables or disables metric logging
+func (w *Worker) SetLogMetrics(logMetrics bool) {
+	w.logMetrics = logMetrics
+}
+
 // RegisterWorkerFunction adds a new worker function that will be invoked when requests
 // are received with the named method.
 func (w *Worker) RegisterWorkerFunction(name string, workerFunction gototo.WorkerFunction) {
@@ -110,27 +116,27 @@ func (w *Worker) MakeWorkerFunction(workerFunction interface{}) gototo.WorkerFun
 	return gototo.MakeWorkerFunction(workerFunction, w.convertTypeDecoderConfig, w.convertTypeTagName)
 }
 
-func (w *Worker) handlePanic(responseChannel chan [][]byte, message [][]byte) {
+func (w *Worker) handlePanic(responseChannel chan *messageContext, message *messageContext) {
 	if r := recover(); r != nil {
 		errString := fmt.Sprintf("Panic while invoking worker function: %#v", r)
 		log.Printf("Panic while invoking worker function: %s\n%s\n", errString, debug.Stack())
 		if responseData, err := w.marshal(&gototo.Response{Success: false, Error: errString}); err != nil {
 			log.Println("Error encoding response:", err)
 		} else {
-			message[len(message)-1] = responseData
+			message.data[len(message.data)-1] = responseData
 			responseChannel <- message
 		}
 	}
 }
 
 // Run a worker function and send the response to responseChannel
-func (w *Worker) runFunction(responseChannel chan [][]byte, message [][]byte, parameters interface{}, workerFunction gototo.WorkerFunction) {
+func (w *Worker) runFunction(responseChannel chan *messageContext, message *messageContext, parameters interface{}, workerFunction gototo.WorkerFunction) {
 	defer w.handlePanic(responseChannel, message)
 	response := workerFunction(parameters)
 	if responseData, err := w.marshal(response); err != nil {
 		panic(err.Error())
 	} else {
-		message[len(message)-1] = responseData
+		message.data[len(message.data)-1] = responseData
 		responseChannel <- message
 	}
 }
@@ -160,13 +166,26 @@ func (w *Worker) Run() (err error) {
 	return
 }
 
+type messageContext struct {
+	data      [][]byte
+	startTime time.Time
+	method    string
+}
+
+func (w *Worker) logFinish(context *messageContext) {
+	if !w.logMetrics {
+		return
+	}
+	log.Println("Request", context.method, "finished in", time.Now().Sub(context.startTime))
+}
+
 func (w *Worker) run(socket *zmq.Socket) {
 	defer close(w.wait)
 	defer socket.Close()
 	socket.SetRcvtimeo(w.passiveTimeout)
 	socket.Bind(w.address)
 	atomic.StoreInt32(&w.runningWorkers, 0)
-	responseChannel := make(chan [][]byte)
+	responseChannel := make(chan *messageContext)
 	sendResponse := func(response [][]byte) {
 		atomic.AddInt32(&w.runningWorkers, -1)
 		if _, err := socket.SendMessage(response); err != nil {
@@ -181,7 +200,8 @@ func (w *Worker) run(socket *zmq.Socket) {
 			// We're already running maxWorkers so block until a response is ready
 			select {
 			case response := <-responseChannel:
-				sendResponse(response)
+				w.logFinish(response)
+				sendResponse(response.data)
 			case <-w.quit:
 				return
 			}
@@ -190,7 +210,8 @@ func (w *Worker) run(socket *zmq.Socket) {
 		case <-w.quit:
 			return
 		case response := <-responseChannel:
-			sendResponse(response)
+			w.logFinish(response)
+			sendResponse(response.data)
 			break
 		default:
 			message, err := socket.RecvMessageBytes(0)
@@ -211,11 +232,12 @@ func (w *Worker) run(socket *zmq.Socket) {
 				log.Println("Unregistered worker function:", request.Method)
 				break
 			}
+			context := messageContext{data: message, startTime: time.Now(), method: request.Method}
 			if atomic.LoadInt32(&w.runningWorkers) == 0 {
 				socket.SetRcvtimeo(w.activeTimeout)
 			}
 			atomic.AddInt32(&w.runningWorkers, 1)
-			go w.runFunction(responseChannel, message, request.Parameters, workerFunction)
+			go w.runFunction(responseChannel, &context, request.Parameters, workerFunction)
 		}
 	}
 }
