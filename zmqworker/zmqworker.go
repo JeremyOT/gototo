@@ -118,9 +118,8 @@ func (w *Worker) MakeWorkerFunction(workerFunction interface{}) gototo.WorkerFun
 
 func (w *Worker) handlePanic(responseChannel chan *messageContext, message *messageContext) {
 	if r := recover(); r != nil {
-		errString := fmt.Sprintf("Panic while invoking worker function: %#v", r)
-		log.Printf("Panic while invoking worker function: %s\n%s\n", errString, debug.Stack())
-		if responseData, err := w.marshal(&gototo.Response{Success: false, Error: errString}); err != nil {
+		log.Printf("Panic while invoking worker function: %#v\n%s\n", r, string(debug.Stack()))
+		if responseData, err := w.marshal(&gototo.Response{Success: false, Error: fmt.Sprintf("%s", r)}); err != nil {
 			log.Println("Error encoding response:", err)
 		} else {
 			message.data[len(message.data)-1] = responseData

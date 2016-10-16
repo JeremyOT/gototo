@@ -175,9 +175,8 @@ func (w *Worker) writeResponse(writer http.ResponseWriter, contentType string, d
 
 func (w *Worker) handlePanic(writer http.ResponseWriter, contentType string) {
 	if r := recover(); r != nil {
-		errString := fmt.Sprintf("Panic while invoking worker function: %#v", r)
-		log.Printf("Panic while invoking worker function: %s\n%s\n", errString, debug.Stack())
-		w.writeResponse(writer, contentType, &gototo.Response{Success: false, Error: errString}, 500)
+		log.Printf("Panic while invoking worker function: %#v\n%s\n", r, string(debug.Stack()))
+		w.writeResponse(writer, contentType, &gototo.Response{Success: false, Error: fmt.Sprintf("%s", r)}, 500)
 	}
 }
 

@@ -124,6 +124,7 @@ func CreateErrorResponse(err error) *Response {
 	if err == nil {
 		return &Response{Success: true}
 	}
+	log.Printf("Error: %#v\n", err)
 	if coded, ok := err.(CodedError); ok {
 		return &Response{Success: false, Error: coded.Error(), ErrorCode: coded.Code()}
 	}
@@ -143,6 +144,7 @@ func CreateResponse(result interface{}, err error) *Response {
 	if err == nil {
 		return &Response{Success: true, Result: result}
 	}
+	log.Printf("Error: %#v\n", err)
 	if coded, ok := err.(CodedError); ok {
 		return &Response{Success: false, Error: coded.Error(), ErrorCode: coded.Code()}
 	}
