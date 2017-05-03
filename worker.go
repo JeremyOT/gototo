@@ -142,13 +142,9 @@ func CreateSuccessResponse(result interface{}) *Response {
 // be initialized with the error text.
 func CreateResponse(result interface{}, err error) *Response {
 	if err == nil {
-		return &Response{Success: true, Result: result}
+		return CreateSuccessResponse(result)
 	}
-	log.Printf("Error: %#v\n", err)
-	if coded, ok := err.(CodedError); ok {
-		return &Response{Success: false, Error: coded.Error(), ErrorCode: coded.Code()}
-	}
-	return &Response{Success: false, Error: err.Error()}
+	return CreateErrorResponse(err)
 }
 
 // Request is a general request container. It has a Method identifier and Parameters.
