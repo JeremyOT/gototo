@@ -8,14 +8,17 @@
 			"revisionTime": "2014-12-02T10:54:02-06:00"
 		},
 		{
+			"checksumSHA1": "c1JIqjo91nD1RMFImnW69n8jtj8=",
 			"path": "github.com/mitchellh/mapstructure",
-			"revision": "bb4fbaf540ca2f7057d3adb5765784d24d9fd801",
-			"revisionTime": "2015-05-29T09:16:59-07:00"
+			"revision": "cc8532a8e9a55ea36402aa21efdf403a60d34096",
+			"revisionTime": "2017-04-22T00:02:51Z"
 		},
 		{
+			"checksumSHA1": "kl5sxwTXEiekMlnxNL5nDoRa9sQ=",
 			"path": "github.com/pebbe/zmq4",
-			"revision": "1c9da3d5ecf6e28ee80ad75df60d772e19e44ef5",
-			"revisionTime": "2015-12-22T18:00:12+01:00"
+			"revision": "7157c0d6df4e6bfcae60a6f20cffaee88ac1ab30",
+			"revisionTime": "2017-03-16T12:22:21Z"
 		}
-	]
+	],
+	"rootPath": "github.com/JeremyOT/gototo"
 }
